@@ -1,6 +1,6 @@
 {
     "name": "@interverse/three-scatter",
-    "version": "1.0.0",
+    "version": "1.0.1",
     "description": "High-performance instanced scatter systems for Three.js with chunk-based LOD",
     "main": "dist/index.js",
     "module": "dist/index.mjs",
@@ -50,10 +50,10 @@
     },
     "repository": {
         "type": "git",
-        "url": ""
+        "url": "git+https://github.com/aiira-co/three-scatter.git"
     },
     "bugs": {
-        "url": ""
+        "url": "https://github.com/aiira-co/three-scatter/issues"
     },
-    "homepage": ""
+    "homepage": "https://github.com/aiira-co/three-scatter#readme"
 }
