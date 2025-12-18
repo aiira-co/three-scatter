@@ -1,16 +1,17 @@
-# three-scatter
+# @interverse/three-scatter
 
 High-performance instanced scatter systems for Three.js with chunk-based LOD and multiple distribution modes.
 
-## Installation
+## 📦 Installation
 
 ```bash
-npm install three-scatter
+npm install @interverse/three-scatter
 # or
-yarn add three-scatter
+yarn add @interverse/three-scatter
 ```
 
-**Peer Dependency**: Requires `three` >= 0.150.0
+**Peer Dependencies:**
+- `three` >= 0.182.0
 
 ## Features
 
@@ -37,7 +38,7 @@ yarn add three-scatter
 
 ```typescript
 import * as THREE from 'three';
-import { MeshScatterSystem } from 'three-scatter';
+import { MeshScatterSystem } from '@interverse/three-scatter';
 
 // Create scatter system
 const scatter = new MeshScatterSystem({
