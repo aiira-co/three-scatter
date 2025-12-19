@@ -17,10 +17,16 @@ yarn add @interverse/three-scatter
 
 - **8 Scatter Systems** - Different distribution patterns for every need
 - **Chunk-based LOD** - Only renders instances near the camera
+- **Multi-Level LOD** - Progressive density reduction with distance
+- **Frustum Culling** - Skip chunks outside camera view
+- **Density Maps** - Texture-based density modulation
+- **Event Callbacks** - Lifecycle hooks for monitoring
+- **Serialization** - Save/load configurations as JSON
+- **Biome Blending** - Multi-layer management with masks
+- **Runtime Editing** - Paint/erase instances with brush tool
 - **Deterministic placement** - Same seed = same results
 - **Noise-based distribution** - Natural-looking patterns
 - **Instance pooling** - Efficient memory management
-- **Normal alignment** - Objects orient to surface
 
 ## Scatter Systems Overview
 
@@ -76,7 +82,190 @@ interface BaseScatterConfig {
   randomSeed?: number;                // For deterministic placement
   showChunksDebug?: boolean;          // Visualize chunks
   noiseDistribution?: NoiseDistributionConfig;
+  lod?: LODConfig;                    // Multi-level LOD
+  densityMap?: DensityMapConfig;      // Texture-based density
+  events?: ScatterEvents;             // Lifecycle callbacks
 }
+```
+
+---
+
+## 🎯 Multi-Level LOD
+
+Progressive density reduction based on camera distance:
+
+```typescript
+const scatter = new MeshScatterSystem({
+  source: treeMesh,
+  surfaceMesh: terrain,
+  density: 0.1,
+  visibilityRange: 500,
+  
+  lod: {
+    levels: [
+      { distance: 0, densityMultiplier: 1.0 },     // Full density up close
+      { distance: 100, densityMultiplier: 0.5 },   // Half at 100 units
+      { distance: 200, densityMultiplier: 0.2 },   // 20% at 200 units
+      { distance: 300, densityMultiplier: 0.05 }   // Sparse beyond
+    ],
+    blendDistance: 20  // Smooth transition between levels
+  }
+});
+
+// Toggle frustum culling
+scatter.setFrustumCulling(true);
+```
+
+---
+
+## 🗺️ Density Maps
+
+Use textures to control where instances spawn:
+
+```typescript
+const scatter = new HeightmapScatterSystem({
+  source: treeMesh,
+  // ... other config
+  
+  densityMap: {
+    textureUrl: '/textures/forest-density.png',
+    channel: 'r',  // 'r' | 'g' | 'b' | 'a'
+    worldBounds: new THREE.Box2(
+      new THREE.Vector2(-500, -500),
+      new THREE.Vector2(500, 500)
+    ),
+    multiplier: 1.0  // Scale the sampled value
+  }
+});
+```
+
+White areas = full density, black = no instances.
+
+---
+
+## 📡 Event Callbacks
+
+Monitor scatter system lifecycle:
+
+```typescript
+const scatter = new MeshScatterSystem({
+  // ... config
+  
+  events: {
+    onChunkActivated: (chunkKey, instanceCount) => {
+      console.log(`Chunk ${chunkKey}: ${instanceCount} instances`);
+    },
+    onChunkDeactivated: (chunkKey) => {
+      console.log(`Deactivated: ${chunkKey}`);
+    },
+    onStatsChanged: (stats) => {
+      updateUI(stats.instances.active);
+    }
+  }
+});
+```
+
+---
+
+## 💾 Serialization
+
+Save and load scatter configurations:
+
+```typescript
+import { ScatterSerializer } from '@interverse/three-scatter';
+
+// Save
+const json = ScatterSerializer.toJSON(scatterConfig, 'HeightmapScatterSystem');
+localStorage.setItem('scatter-config', json);
+
+// Load
+const saved = localStorage.getItem('scatter-config');
+const { type, config } = ScatterSerializer.fromJSON(saved, sourceMesh); 
+
+// Recreate system based on type
+if (type === 'HeightmapScatterSystem') {
+  new HeightmapScatterSystem({ ...config, ...heightmapSpecificConfig });
+}
+```
+
+---
+
+## 🌍 Biome Blending (ScatterBlender)
+
+Manage multiple scatter layers with blend masks:
+
+```typescript
+import { ScatterBlender, HeightmapScatterSystem } from '@interverse/three-scatter';
+
+const blender = new ScatterBlender({
+  worldBounds: new THREE.Box2(
+    new THREE.Vector2(-500, -500),
+    new THREE.Vector2(500, 500)
+  ),
+  updateInterval: 2  // Update every 2 frames
+});
+
+// Add layers
+blender.addLayer('grass', new HeightmapScatterSystem(grassConfig), 1.0);
+blender.addLayer('flowers', new HeightmapScatterSystem(flowerConfig), 0.5);
+blender.addLayer('rocks', new HeightmapScatterSystem(rockConfig), 0.8);
+
+// Initialize with blend mask (R=grass, G=flowers, B=rocks)
+await blender.init('/textures/biome-mask.png');
+scene.add(blender);
+
+// Update each frame
+blender.update(camera);
+
+// Sample mask at position
+const weights = blender.sampleBlendMask(x, z);
+// { r: 0.8, g: 0.2, b: 0.5, a: 1.0 }
+
+// Modify weights at runtime
+blender.setLayerWeight('flowers', 0.8);
+```
+
+---
+
+## 🖌️ Runtime Editing (ScatterBrush)
+
+Paint and erase instances interactively:
+
+```typescript
+import { ScatterBrush } from '@interverse/three-scatter';
+
+const brush = new ScatterBrush(scatter, {
+  radius: 5,
+  strength: 1.0,
+  density: 10,           // Instances per stroke
+  falloff: 'smooth'      // 'constant' | 'linear' | 'smooth'
+});
+
+// On mouse click
+const hitPoint = ScatterBrush.getIntersection(raycaster, [terrain]);
+
+if (hitPoint) {
+  if (isPainting) {
+    // Paint with optional height provider
+    const painted = brush.paint(hitPoint, (x, z) => terrain.getHeight(x, z));
+    console.log(`Painted ${painted.length} instances`);
+  } else {
+    // Erase
+    const erased = brush.erase(hitPoint);
+    console.log(`Erased ${erased} instances`);
+  }
+}
+
+// Brush controls
+brush.setRadius(10);
+brush.setStrength(0.5);
+brush.setDensity(20);
+
+// Get painted positions (for saving)
+const positions = brush.getPaintedPositions();
+
+// Clear all painted
+brush.clearAll();
 ```
 
 ---
