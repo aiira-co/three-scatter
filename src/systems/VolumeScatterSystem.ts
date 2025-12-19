@@ -72,6 +72,13 @@ export class VolumeScatterSystem extends BaseScatterSystem {
         const distance = Math.sqrt(dx * dx + dz * dz);
 
         if (distance <= visRange) {
+          // Frustum culling
+          const chunkBounds = new THREE.Box3(
+            new THREE.Vector3(chunkX - chunkSize / 2, this.bounds.min.y, chunkZ - chunkSize / 2),
+            new THREE.Vector3(chunkX + chunkSize / 2, this.bounds.max.y, chunkZ + chunkSize / 2)
+          );
+          if (!this.isChunkInFrustum(chunkBounds)) continue;
+
           const key = this.getChunkKey(chunkX, chunkZ);
           activeChunkKeys.add(key);
 

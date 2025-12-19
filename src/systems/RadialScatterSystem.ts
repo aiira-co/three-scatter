@@ -75,6 +75,13 @@ export class RadialScatterSystem extends BaseScatterSystem {
         const distance = Math.sqrt(dx * dx + dz * dz);
 
         if (distance <= visRange) {
+          // Frustum culling
+          const chunkBounds = new THREE.Box3(
+            new THREE.Vector3(chunkX - chunkSize / 2, this.heightRange[0], chunkZ - chunkSize / 2),
+            new THREE.Vector3(chunkX + chunkSize / 2, this.heightRange[1], chunkZ + chunkSize / 2)
+          );
+          if (!this.isChunkInFrustum(chunkBounds)) continue;
+
           const key = this.getChunkKey(chunkX, chunkZ);
           activeChunkKeys.add(key);
 

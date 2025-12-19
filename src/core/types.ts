@@ -16,6 +16,27 @@ export interface NoiseDistributionConfig {
 }
 
 /**
+ * Event callbacks for scatter system lifecycle
+ */
+export interface ScatterEvents {
+  /** Called when a chunk is activated with instances */
+  onChunkActivated?: (chunkKey: string, instanceCount: number) => void;
+  /** Called when a chunk is deactivated */
+  onChunkDeactivated?: (chunkKey: string) => void;
+  /** Called when scatter statistics change */
+  onStatsChanged?: (stats: ScatterStats) => void;
+}
+
+/**
+ * Scatter system statistics
+ */
+export interface ScatterStats {
+  instances: { active: number; total: number; max: number };
+  chunks: { total: number; active: number };
+  meshes: number;
+}
+
+/**
  * Base configuration shared by all scatter systems
  */
 export interface BaseScatterConfig {
@@ -43,11 +64,15 @@ export interface BaseScatterConfig {
   showChunksDebug?: boolean;
   /** Noise-based distribution settings */
   noiseDistribution?: NoiseDistributionConfig;
+  /** Event callbacks */
+  events?: ScatterEvents;
 }
 
 /**
  * Required version of BaseScatterConfig with all optional fields filled
  */
-export type RequiredScatterConfig = Required<BaseScatterConfig> & {
+export type RequiredScatterConfig = Required<Omit<BaseScatterConfig, 'events'>> & {
   noiseDistribution: Required<NoiseDistributionConfig>;
+  events: ScatterEvents;
 };
+

@@ -81,6 +81,13 @@ export class HeightmapScatterSystem extends BaseScatterSystem {
         const distance = Math.sqrt(dx * dx + dz * dz);
 
         if (distance <= visRange) {
+          // Frustum culling - skip chunks not visible
+          const chunkBounds = new THREE.Box3(
+            new THREE.Vector3(chunkX - chunkSize / 2, -1000, chunkZ - chunkSize / 2),
+            new THREE.Vector3(chunkX + chunkSize / 2, 1000, chunkZ + chunkSize / 2)
+          );
+          if (!this.isChunkInFrustum(chunkBounds)) continue;
+
           activeChunkKeys.add(key);
           if (!this.chunks.has(key) || !this.chunks.get(key)!.isActive) {
             this.activateChunk(chunkX, chunkZ);

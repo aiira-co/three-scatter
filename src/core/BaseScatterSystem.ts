@@ -21,6 +21,11 @@ export abstract class BaseScatterSystem extends THREE.Group {
   protected debugGroup: THREE.Group;
   protected debugMaterial: THREE.LineBasicMaterial;
 
+  // Frustum culling
+  protected frustum: THREE.Frustum = new THREE.Frustum();
+  protected frustumMatrix: THREE.Matrix4 = new THREE.Matrix4();
+  protected frustumCullingEnabled: boolean = true;
+
   constructor(config: BaseScatterConfig) {
     super();
     const defaultNoiseConfig = {
@@ -45,7 +50,8 @@ export abstract class BaseScatterSystem extends THREE.Group {
       alignToNormal: config.alignToNormal ?? true,
       randomSeed: config.randomSeed ?? Date.now(),
       showChunksDebug: config.showChunksDebug ?? false,
-      noiseDistribution: { ...defaultNoiseConfig, ...(config.noiseDistribution || {}) }
+      noiseDistribution: { ...defaultNoiseConfig, ...(config.noiseDistribution || {}) },
+      events: config.events ?? {}
     } as RequiredScatterConfig;
 
     this.instancePool = new InstancePool(this.config.maxInstances);
@@ -119,7 +125,36 @@ export abstract class BaseScatterSystem extends THREE.Group {
     if (!this.isInitialized) return;
     // Set the camera for subclasses to use
     currentCamera = camera;
+    // Update frustum for culling
+    this.updateFrustum(camera);
     this.updateChunks();
+  }
+
+  /**
+   * Update the view frustum from camera
+   */
+  protected updateFrustum(camera: THREE.Camera): void {
+    camera.updateMatrixWorld();
+    this.frustumMatrix.multiplyMatrices(
+      camera.projectionMatrix,
+      camera.matrixWorldInverse
+    );
+    this.frustum.setFromProjectionMatrix(this.frustumMatrix);
+  }
+
+  /**
+   * Check if a bounding box is visible in the frustum
+   */
+  protected isChunkInFrustum(bounds: THREE.Box3): boolean {
+    if (!this.frustumCullingEnabled) return true;
+    return this.frustum.intersectsBox(bounds);
+  }
+
+  /**
+   * Enable or disable frustum culling
+   */
+  setFrustumCulling(enabled: boolean): void {
+    this.frustumCullingEnabled = enabled;
   }
 
   /**
@@ -243,6 +278,9 @@ export abstract class BaseScatterSystem extends THREE.Group {
 
     this.populateChunk(chunk, x, z, extraData);
     this.chunks.set(key, chunk);
+
+    // Emit activation event
+    this.config.events?.onChunkActivated?.(key, chunk.instances.length);
   }
 
   /**
@@ -259,6 +297,9 @@ export abstract class BaseScatterSystem extends THREE.Group {
 
     chunk.instances = [];
     chunk.isActive = false;
+
+    // Emit deactivation event
+    this.config.events?.onChunkDeactivated?.(key);
   }
 
   /**
