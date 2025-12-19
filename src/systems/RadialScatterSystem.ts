@@ -107,7 +107,8 @@ export class RadialScatterSystem extends BaseScatterSystem {
     );
 
     const chunkArea = this.config.chunkSize * this.config.chunkSize;
-    const targetCount = Math.floor(chunkArea * this.config.density);
+    const lodMultiplier = this.getLODDensityMultiplier(centerX, centerZ);
+    const targetCount = Math.floor(chunkArea * this.config.density * lodMultiplier);
 
     const chunkSeed = ((centerX * 73856093) ^ (centerZ * 19349663) ^ this.config.randomSeed) >>> 0;
     const rng = new SeededRandom(chunkSeed);

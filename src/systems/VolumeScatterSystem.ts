@@ -104,7 +104,8 @@ export class VolumeScatterSystem extends BaseScatterSystem {
     );
 
     const chunkVolume = chunkBounds.getSize(new THREE.Vector3()).length();
-    const targetCount = Math.floor(chunkVolume * this.config.density);
+    const lodMultiplier = this.getLODDensityMultiplier(centerX, centerZ);
+    const targetCount = Math.floor(chunkVolume * this.config.density * lodMultiplier);
 
     const chunkSeed = ((centerX * 73856093) ^ (centerZ * 19349663) ^ this.config.randomSeed) >>> 0;
     const rng = new SeededRandom(chunkSeed);

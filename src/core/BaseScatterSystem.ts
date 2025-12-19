@@ -26,6 +26,10 @@ export abstract class BaseScatterSystem extends THREE.Group {
   protected frustumMatrix: THREE.Matrix4 = new THREE.Matrix4();
   protected frustumCullingEnabled: boolean = true;
 
+  // Density map
+  protected densityMapTexture: THREE.Texture | null = null;
+  protected densityMapData: Uint8Array | null = null;
+
   constructor(config: BaseScatterConfig) {
     super();
     const defaultNoiseConfig = {
@@ -107,6 +111,11 @@ export abstract class BaseScatterSystem extends THREE.Group {
    * Adds all instanced meshes to this Group.
    */
   async init(): Promise<void> {
+    // Load density map if configured
+    if (this.config.densityMap?.textureUrl) {
+      await this.loadDensityMap();
+    }
+
     await this.initializeDistribution();
     // Add all instanced meshes to this Group
     for (const mesh of this.converter.getInstancedMeshes()) {
@@ -114,6 +123,48 @@ export abstract class BaseScatterSystem extends THREE.Group {
     }
     this.isInitialized = true;
     if (this.config.showChunksDebug) this.updateDebugVisuals();
+  }
+
+  /**
+   * Load density map texture and extract pixel data
+   */
+  protected async loadDensityMap(): Promise<void> {
+    if (!this.config.densityMap?.textureUrl) return;
+
+    const loader = new THREE.TextureLoader();
+    this.densityMapTexture = await loader.loadAsync(this.config.densityMap.textureUrl);
+
+    const canvas = document.createElement('canvas');
+    const img = this.densityMapTexture.image as HTMLImageElement;
+    canvas.width = img.width;
+    canvas.height = img.height;
+    const ctx = canvas.getContext('2d')!;
+    ctx.drawImage(img, 0, 0);
+    this.densityMapData = new Uint8Array(ctx.getImageData(0, 0, canvas.width, canvas.height).data);
+  }
+
+  /**
+   * Sample density map at world position (returns 0-1)
+   */
+  protected sampleDensityMap(worldX: number, worldZ: number): number {
+    if (!this.densityMapData || !this.densityMapTexture || !this.config.densityMap) return 1.0;
+
+    const bounds = this.config.densityMap.worldBounds;
+    const u = (worldX - bounds.min.x) / (bounds.max.x - bounds.min.x);
+    const v = (worldZ - bounds.min.y) / (bounds.max.y - bounds.min.y);
+
+    if (u < 0 || u > 1 || v < 0 || v > 1) return 1.0;
+
+    const img = this.densityMapTexture.image as HTMLImageElement;
+    const px = Math.floor(u * (img.width - 1));
+    const py = Math.floor((1 - v) * (img.height - 1));
+    const idx = (py * img.width + px) * 4;
+
+    const channelOffset = { 'r': 0, 'g': 1, 'b': 2, 'a': 3 };
+    const channel = this.config.densityMap.channel ?? 'r';
+    const value = this.densityMapData[idx + channelOffset[channel]] / 255;
+
+    return value * (this.config.densityMap.multiplier ?? 1.0);
   }
 
   /**
@@ -155,6 +206,66 @@ export abstract class BaseScatterSystem extends THREE.Group {
    */
   setFrustumCulling(enabled: boolean): void {
     this.frustumCullingEnabled = enabled;
+  }
+
+  /**
+   * Calculate LOD density multiplier based on distance from camera
+   * @param chunkCenterX - X coordinate of chunk center
+   * @param chunkCenterZ - Z coordinate of chunk center
+   */
+  protected getLODDensityMultiplier(chunkCenterX: number, chunkCenterZ: number): number {
+    const camera = this.getCurrentCamera();
+    if (!camera || !this.config.lod?.levels?.length) return 1.0;
+
+    const dx = chunkCenterX - camera.position.x;
+    const dz = chunkCenterZ - camera.position.z;
+    const distance = Math.sqrt(dx * dx + dz * dz);
+
+    const levels = this.config.lod.levels;
+    const blendDistance = this.config.lod.blendDistance ?? 0;
+
+    // Find which LOD level this distance falls into
+    for (let i = levels.length - 1; i >= 0; i--) {
+      if (distance >= levels[i].distance) {
+        // Check for blending with next level
+        if (blendDistance > 0 && i < levels.length - 1) {
+          const nextLevel = levels[i + 1];
+          const transitionStart = levels[i].distance;
+          const transitionEnd = nextLevel.distance;
+
+          if (distance < transitionStart + blendDistance && distance < transitionEnd) {
+            const t = (distance - transitionStart) / blendDistance;
+            const clampedT = Math.min(1, Math.max(0, t));
+            return levels[i].densityMultiplier * (1 - clampedT) + nextLevel.densityMultiplier * clampedT;
+          }
+        }
+        return levels[i].densityMultiplier;
+      }
+    }
+
+    return 1.0; // Full density for closest range
+  }
+
+  /**
+   * Calculate LOD scale multiplier based on distance from camera
+   */
+  protected getLODScaleMultiplier(chunkCenterX: number, chunkCenterZ: number): number {
+    const camera = this.getCurrentCamera();
+    if (!camera || !this.config.lod?.levels?.length) return 1.0;
+
+    const dx = chunkCenterX - camera.position.x;
+    const dz = chunkCenterZ - camera.position.z;
+    const distance = Math.sqrt(dx * dx + dz * dz);
+
+    const levels = this.config.lod.levels;
+
+    for (let i = levels.length - 1; i >= 0; i--) {
+      if (distance >= levels[i].distance) {
+        return levels[i].scaleMultiplier ?? 1.0;
+      }
+    }
+
+    return 1.0;
   }
 
   /**

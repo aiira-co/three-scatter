@@ -4,7 +4,12 @@ export type {
   BaseScatterConfig,
   RequiredScatterConfig,
   NoiseDistributionConfig,
-  ChunkData
+  ChunkData,
+  ScatterEvents,
+  ScatterStats,
+  LODLevel,
+  LODConfig,
+  DensityMapConfig
 } from './core';
 
 // Systems
@@ -35,7 +40,14 @@ export type {
 export {
   SeededRandom,
   PerlinNoise,
-  InstancePool
+  InstancePool,
+  ScatterSerializer
+} from './utils';
+
+export type {
+  ScatterSaveData,
+  SerializedScatterConfig,
+  SerializedInstance
 } from './utils';
 
 // Converter

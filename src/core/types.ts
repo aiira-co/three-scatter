@@ -37,6 +37,42 @@ export interface ScatterStats {
 }
 
 /**
+ * Single LOD level configuration
+ */
+export interface LODLevel {
+  /** Distance threshold for this LOD level */
+  distance: number;
+  /** Density multiplier (0-1) */
+  densityMultiplier: number;
+  /** Optional scale multiplier */
+  scaleMultiplier?: number;
+}
+
+/**
+ * LOD configuration for progressive detail reduction
+ */
+export interface LODConfig {
+  /** Array of LOD levels, ordered by distance (ascending) */
+  levels: LODLevel[];
+  /** Blend distance between levels (optional smooth transition) */
+  blendDistance?: number;
+}
+
+/**
+ * Density map configuration for texture-based density modulation
+ */
+export interface DensityMapConfig {
+  /** URL to density map texture */
+  textureUrl: string;
+  /** Which channel to sample (default: 'r') */
+  channel?: 'r' | 'g' | 'b' | 'a';
+  /** World bounds the texture maps to */
+  worldBounds: THREE.Box2;
+  /** Multiplier applied to sampled value */
+  multiplier?: number;
+}
+
+/**
  * Base configuration shared by all scatter systems
  */
 export interface BaseScatterConfig {
@@ -66,6 +102,10 @@ export interface BaseScatterConfig {
   noiseDistribution?: NoiseDistributionConfig;
   /** Event callbacks */
   events?: ScatterEvents;
+  /** LOD configuration for distance-based density */
+  lod?: LODConfig;
+  /** Density map for texture-based density variation */
+  densityMap?: DensityMapConfig;
 }
 
 /**
