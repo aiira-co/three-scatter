@@ -50,6 +50,19 @@ export type {
   SerializedInstance
 } from './utils';
 
+// Features
+export {
+  ScatterBlender,
+  ScatterBrush
+} from './features';
+
+export type {
+  ScatterLayer,
+  BlenderConfig,
+  BrushConfig,
+  PaintedInstance
+} from './features';
+
 // Converter
 export { MeshToInstancedMeshConverter } from './converter';
 export type { ITransformationData } from './converter';
