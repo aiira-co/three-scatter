@@ -1,13 +1,13 @@
 {
     "name": "@interverse/three-scatter",
-    "version": "1.1.0",
+    "version": "1.1.1",
     "description": "High-performance instanced scatter systems for Three.js with chunk-based LOD",
     "main": "dist/index.js",
-    "module": "dist/index.mjs",
+    "module": "dist/esm/index.js",
     "types": "dist/index.d.ts",
     "exports": {
         ".": {
-            "import": "./dist/index.mjs",
+            "import": "./dist/esm/index.js",
             "require": "./dist/index.js",
             "types": "./dist/index.d.ts"
         }
@@ -18,9 +18,9 @@
         "LICENSE"
     ],
     "scripts": {
-        "build": "tsc && tsc -p tsconfig.esm.json",
+        "build": "tsc && tsc -p tsconfig.esm.json && node -e \"require('fs').writeFileSync('dist/esm/package.json', '{\\\"type\\\":\\\"module\\\"}')\"",
         "build:cjs": "tsc",
-        "build:esm": "tsc -p tsconfig.esm.json",
+        "build:esm": "tsc -p tsconfig.esm.json && node -e \"require('fs').writeFileSync('dist/esm/package.json', '{\\\"type\\\":\\\"module\\\"}')\"",
         "clean": "rimraf dist",
         "prepublishOnly": "yarn clean && yarn build"
     },
