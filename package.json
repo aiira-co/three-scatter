@@ -1,59 +1,59 @@
 {
-    "name": "@interverse/three-scatter",
-    "version": "1.1.1",
-    "description": "High-performance instanced scatter systems for Three.js with chunk-based LOD",
-    "main": "dist/index.js",
-    "module": "dist/esm/index.js",
-    "types": "dist/index.d.ts",
-    "exports": {
-        ".": {
-            "import": "./dist/esm/index.js",
-            "require": "./dist/index.js",
-            "types": "./dist/index.d.ts"
-        }
-    },
-    "files": [
-        "dist",
-        "README.md",
-        "LICENSE"
-    ],
-    "scripts": {
-        "build": "tsc && tsc -p tsconfig.esm.json && node -e \"require('fs').writeFileSync('dist/esm/package.json', '{\\\"type\\\":\\\"module\\\"}')\"",
-        "build:cjs": "tsc",
-        "build:esm": "tsc -p tsconfig.esm.json && node -e \"require('fs').writeFileSync('dist/esm/package.json', '{\\\"type\\\":\\\"module\\\"}')\"",
-        "clean": "rimraf dist",
-        "prepublishOnly": "yarn clean && yarn build"
-    },
-    "keywords": [
-        "three",
-        "threejs",
-        "three.js",
-        "scatter",
-        "instancing",
-        "instancedmesh",
-        "vegetation",
-        "grass",
-        "foliage",
-        "procedural",
-        "chunks",
-        "lod"
-    ],
-    "author": "Interverse Engine",
-    "license": "MIT",
-    "peerDependencies": {
-        "three": ">=0.182.0"
-    },
-    "devDependencies": {
-        "@types/three": "^0.182.0",
-        "rimraf": "^5.0.0",
-        "typescript": "^5.3.0"
-    },
-    "repository": {
-        "type": "git",
-        "url": "git+https://github.com/aiira-co/three-scatter.git"
-    },
-    "bugs": {
-        "url": "https://github.com/aiira-co/three-scatter/issues"
-    },
-    "homepage": "https://github.com/aiira-co/three-scatter#readme"
+  "name": "@interverse/three-scatter",
+  "version": "1.2.0",
+  "description": "High-performance instanced scatter systems for Three.js with chunk-based LOD",
+  "main": "dist/index.js",
+  "module": "dist/esm/index.js",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "import": "./dist/esm/index.js",
+      "require": "./dist/index.js",
+      "types": "./dist/index.d.ts"
+    }
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "build": "tsc && tsc -p tsconfig.esm.json && node -e \"require('fs').writeFileSync('dist/esm/package.json', '{\\\"type\\\":\\\"module\\\"}')\"",
+    "build:cjs": "tsc",
+    "build:esm": "tsc -p tsconfig.esm.json && node -e \"require('fs').writeFileSync('dist/esm/package.json', '{\\\"type\\\":\\\"module\\\"}')\"",
+    "clean": "rimraf dist",
+    "prepublishOnly": "yarn clean && yarn build"
+  },
+  "keywords": [
+    "three",
+    "threejs",
+    "three.js",
+    "scatter",
+    "instancing",
+    "instancedmesh",
+    "vegetation",
+    "grass",
+    "foliage",
+    "procedural",
+    "chunks",
+    "lod"
+  ],
+  "author": "Interverse Engine",
+  "license": "MIT",
+  "peerDependencies": {
+    "three": ">=0.182.0"
+  },
+  "devDependencies": {
+    "@types/three": "^0.182.0",
+    "rimraf": "^5.0.0",
+    "typescript": "^5.3.0"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/aiira-co/three-scatter.git"
+  },
+  "bugs": {
+    "url": "https://github.com/aiira-co/three-scatter/issues"
+  },
+  "homepage": "https://github.com/aiira-co/three-scatter#readme"
 }

@@ -10,10 +10,14 @@ export interface HeightmapScatterConfig extends BaseScatterConfig {
   worldSize: number;
   /** URL to height map image */
   heightMapUrl?: string;
+  /** Direct height map data (RGBA) */
+  heightMapData?: Uint8Array | Uint8ClampedArray;
   /** Height multiplier */
   heightMapScale?: number;
   /** URL to mask image (white = place, black = no place) */
   maskMapUrl?: string;
+  /** Direct mask map data (RGBA) */
+  maskMapData?: Uint8Array | Uint8ClampedArray;
   /** Maximum slope in degrees for placement */
   slopeLimit?: number;
 }
@@ -23,9 +27,9 @@ export interface HeightmapScatterConfig extends BaseScatterConfig {
  */
 export class HeightmapScatterSystem extends BaseScatterSystem {
   private heightMap: THREE.Texture | null = null;
-  private heightMapData: Uint8Array | null = null;
+  private heightMapData: Uint8Array | Uint8ClampedArray | null = null;
   private maskMap: THREE.Texture | null = null;
-  private maskMapData: Uint8Array | null = null;
+  private maskMapData: Uint8Array | Uint8ClampedArray | null = null;
   private worldSize: number;
   private heightMapScale: number;
   private slopeLimit: number;
@@ -42,12 +46,16 @@ export class HeightmapScatterSystem extends BaseScatterSystem {
     const loader = new THREE.TextureLoader();
     const cfgTyped = this.config as unknown as HeightmapScatterConfig;
 
-    if (cfgTyped.heightMapUrl) {
+    if (cfgTyped.heightMapData) {
+      this.heightMapData = cfgTyped.heightMapData;
+    } else if (cfgTyped.heightMapUrl) {
       this.heightMap = await loader.loadAsync(cfgTyped.heightMapUrl);
       this.heightMapData = await this.extractTextureData(this.heightMap);
     }
 
-    if (cfgTyped.maskMapUrl) {
+    if (cfgTyped.maskMapData) {
+      this.maskMapData = cfgTyped.maskMapData;
+    } else if (cfgTyped.maskMapUrl) {
       this.maskMap = await loader.loadAsync(cfgTyped.maskMapUrl);
       this.maskMapData = await this.extractTextureData(this.maskMap);
     }
