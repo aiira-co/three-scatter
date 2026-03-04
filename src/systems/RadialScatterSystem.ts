@@ -137,7 +137,7 @@ export class RadialScatterSystem extends BaseScatterSystem {
       const position = new THREE.Vector3(x, y, z);
 
       if (!chunkBounds.containsPoint(position)) continue;
-      if (!this.shouldPlaceInstance(x, z, chunk.noiseGenerator!)) continue;
+      if (!this.shouldPlaceInstance(x, z, chunk.noiseGenerator!, rng)) continue;
 
       const instanceId = this.instancePool.acquire();
       if (instanceId === null) break;

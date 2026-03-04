@@ -18,6 +18,7 @@ export abstract class BaseScatterSystem extends THREE.Group {
   protected instancePool: InstancePool;
   protected chunks: Map<string, ChunkData> = new Map();
   protected isInitialized: boolean = false;
+  private initPromise: Promise<void> | null = null;
   protected debugGroup: THREE.Group;
   protected debugMaterial: THREE.LineBasicMaterial;
 
@@ -111,6 +112,10 @@ export abstract class BaseScatterSystem extends THREE.Group {
    * Adds all instanced meshes to this Group.
    */
   async init(): Promise<void> {
+    if (this.isInitialized) return;
+    if (this.initPromise) return this.initPromise;
+
+    this.initPromise = (async () => {
     // Load density map if configured
     if (this.config.densityMap?.textureUrl) {
       await this.loadDensityMap();
@@ -123,6 +128,13 @@ export abstract class BaseScatterSystem extends THREE.Group {
     }
     this.isInitialized = true;
     if (this.config.showChunksDebug) this.updateDebugVisuals();
+    })();
+
+    try {
+      await this.initPromise;
+    } finally {
+      this.initPromise = null;
+    }
   }
 
   /**
@@ -305,6 +317,7 @@ export abstract class BaseScatterSystem extends THREE.Group {
     }
     this.chunks.clear();
     this.updateChunks();
+    this.emitStatsChanged();
   }
 
   /**
@@ -322,6 +335,7 @@ export abstract class BaseScatterSystem extends THREE.Group {
     this.debugMaterial.dispose();
     this.instancePool.clear();
     this.isInitialized = false;
+    this.initPromise = null;
   }
 
   /**
@@ -392,6 +406,7 @@ export abstract class BaseScatterSystem extends THREE.Group {
 
     // Emit activation event
     this.config.events?.onChunkActivated?.(key, chunk.instances.length);
+    this.emitStatsChanged();
   }
 
   /**
@@ -411,6 +426,11 @@ export abstract class BaseScatterSystem extends THREE.Group {
 
     // Emit deactivation event
     this.config.events?.onChunkDeactivated?.(key);
+    this.emitStatsChanged();
+  }
+
+  protected emitStatsChanged(): void {
+    this.config.events?.onStatsChanged?.(this.getStats());
   }
 
   /**
@@ -431,10 +451,25 @@ export abstract class BaseScatterSystem extends THREE.Group {
   /**
    * Check if instance should be placed at position based on noise
    */
-  protected shouldPlaceInstance(x: number, z: number, noise: PerlinNoise): boolean {
-    if (!this.config.noiseDistribution.enabled) return true;
-    const noiseValue = this.getNoiseValue(x, z, noise);
-    return noiseValue >= this.config.noiseDistribution.threshold;
+  protected shouldPlaceInstance(x: number, z: number, noise: PerlinNoise, rng?: SeededRandom): boolean {
+    if (this.config.noiseDistribution.enabled) {
+      const noiseValue = this.getNoiseValue(x, z, noise);
+      if (noiseValue < this.config.noiseDistribution.threshold) {
+        return false;
+      }
+    }
+
+    const densityValue = THREE.MathUtils.clamp(this.sampleDensityMap(x, z), 0, 1);
+    if (densityValue <= 0) return false;
+    if (densityValue >= 1) return true;
+
+    if (rng) {
+      return rng.next() <= densityValue;
+    }
+
+    const hashed = Math.sin((x * 12.9898) + (z * 78.233) + this.config.randomSeed) * 43758.5453;
+    const pseudoRandom = hashed - Math.floor(hashed);
+    return pseudoRandom <= densityValue;
   }
 
   /**

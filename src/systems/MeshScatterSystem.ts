@@ -113,7 +113,7 @@ export class MeshScatterSystem extends BaseScatterSystem {
       this.meshSampler.sample(position, normal);
 
       if (!chunkBounds.containsPoint(position)) continue;
-      if (!this.shouldPlaceInstance(position.x, position.z, chunk.noiseGenerator!)) continue;
+      if (!this.shouldPlaceInstance(position.x, position.z, chunk.noiseGenerator!, rng)) continue;
 
       const slope = THREE.MathUtils.radToDeg(Math.acos(normal.y));
       if (slope > this.slopeLimit) continue;

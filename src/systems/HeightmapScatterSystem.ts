@@ -12,12 +12,16 @@ export interface HeightmapScatterConfig extends BaseScatterConfig {
   heightMapUrl?: string;
   /** Direct height map data (RGBA) */
   heightMapData?: Uint8Array | Uint8ClampedArray;
+  /** Height map dimensions when using direct data */
+  heightMapSize?: [number, number];
   /** Height multiplier */
   heightMapScale?: number;
   /** URL to mask image (white = place, black = no place) */
   maskMapUrl?: string;
   /** Direct mask map data (RGBA) */
   maskMapData?: Uint8Array | Uint8ClampedArray;
+  /** Mask map dimensions when using direct data */
+  maskMapSize?: [number, number];
   /** Maximum slope in degrees for placement */
   slopeLimit?: number;
 }
@@ -28,8 +32,12 @@ export interface HeightmapScatterConfig extends BaseScatterConfig {
 export class HeightmapScatterSystem extends BaseScatterSystem {
   private heightMap: THREE.Texture | null = null;
   private heightMapData: Uint8Array | Uint8ClampedArray | null = null;
+  private heightMapWidth = 0;
+  private heightMapHeight = 0;
   private maskMap: THREE.Texture | null = null;
   private maskMapData: Uint8Array | Uint8ClampedArray | null = null;
+  private maskMapWidth = 0;
+  private maskMapHeight = 0;
   private worldSize: number;
   private heightMapScale: number;
   private slopeLimit: number;
@@ -48,16 +56,28 @@ export class HeightmapScatterSystem extends BaseScatterSystem {
 
     if (cfgTyped.heightMapData) {
       this.heightMapData = cfgTyped.heightMapData;
+      const dims = this.resolveDataDimensions(cfgTyped.heightMapData, cfgTyped.heightMapSize);
+      this.heightMapWidth = dims.width;
+      this.heightMapHeight = dims.height;
     } else if (cfgTyped.heightMapUrl) {
       this.heightMap = await loader.loadAsync(cfgTyped.heightMapUrl);
       this.heightMapData = await this.extractTextureData(this.heightMap);
+      const img = this.heightMap.image as HTMLImageElement;
+      this.heightMapWidth = img.width;
+      this.heightMapHeight = img.height;
     }
 
     if (cfgTyped.maskMapData) {
       this.maskMapData = cfgTyped.maskMapData;
+      const dims = this.resolveDataDimensions(cfgTyped.maskMapData, cfgTyped.maskMapSize);
+      this.maskMapWidth = dims.width;
+      this.maskMapHeight = dims.height;
     } else if (cfgTyped.maskMapUrl) {
       this.maskMap = await loader.loadAsync(cfgTyped.maskMapUrl);
       this.maskMapData = await this.extractTextureData(this.maskMap);
+      const img = this.maskMap.image as HTMLImageElement;
+      this.maskMapWidth = img.width;
+      this.maskMapHeight = img.height;
     }
   }
 
@@ -135,7 +155,7 @@ export class HeightmapScatterSystem extends BaseScatterSystem {
       const x = rng.range(minX, maxX);
       const z = rng.range(minZ, maxZ);
 
-      if (!this.shouldPlaceInstance(x, z, chunk.noiseGenerator!)) continue;
+      if (!this.shouldPlaceInstance(x, z, chunk.noiseGenerator!, rng)) continue;
       if (!this.checkMask(x, z)) continue;
 
       const height = this.sampleHeight(x, z);
@@ -167,6 +187,23 @@ export class HeightmapScatterSystem extends BaseScatterSystem {
     return new Uint8Array(ctx.getImageData(0, 0, canvas.width, canvas.height).data);
   }
 
+  private resolveDataDimensions(
+    data: Uint8Array | Uint8ClampedArray,
+    size?: [number, number]
+  ): { width: number; height: number } {
+    if (size && size[0] > 0 && size[1] > 0) {
+      return { width: size[0], height: size[1] };
+    }
+
+    const pixelCount = Math.floor(data.length / 4);
+    const side = Math.floor(Math.sqrt(pixelCount));
+    if (side > 0 && side * side === pixelCount) {
+      return { width: side, height: side };
+    }
+
+    return { width: 0, height: 0 };
+  }
+
   private worldToUV(worldX: number, worldZ: number): { u: number; v: number } {
     const halfWorld = this.worldSize / 2;
     return {
@@ -180,16 +217,18 @@ export class HeightmapScatterSystem extends BaseScatterSystem {
     const { u, v } = this.worldToUV(x, z);
     if (u < 0 || u > 1 || v < 0 || v > 1) return null;
 
-    const img = this.heightMap!.image as HTMLImageElement;
-    const px = Math.floor(u * (img.width - 1));
-    const py = Math.floor((1 - v) * (img.height - 1));
+    if (this.heightMapWidth <= 0 || this.heightMapHeight <= 0) {
+      return 0;
+    }
+    const px = Math.floor(u * (this.heightMapWidth - 1));
+    const py = Math.floor((1 - v) * (this.heightMapHeight - 1));
 
-    const heightValue = this.heightMapData[(py * img.width + px) * 4] / 255;
+    const heightValue = this.heightMapData[(py * this.heightMapWidth + px) * 4] / 255;
     return heightValue * this.heightMapScale;
   }
 
   private sampleNormal(x: number, z: number): THREE.Vector3 {
-    if (!this.heightMap) return new THREE.Vector3(0, 1, 0);
+    if (!this.heightMapData) return new THREE.Vector3(0, 1, 0);
 
     const delta = 1;
     const hL = this.sampleHeight(x - delta, z) ?? 0;
@@ -209,10 +248,12 @@ export class HeightmapScatterSystem extends BaseScatterSystem {
     const { u, v } = this.worldToUV(x, z);
     if (u < 0 || u > 1 || v < 0 || v > 1) return false;
 
-    const img = this.maskMap!.image as HTMLImageElement;
-    const px = Math.floor(u * (img.width - 1));
-    const py = Math.floor((1 - v) * (img.height - 1));
+    if (this.maskMapWidth <= 0 || this.maskMapHeight <= 0) {
+      return true;
+    }
+    const px = Math.floor(u * (this.maskMapWidth - 1));
+    const py = Math.floor((1 - v) * (this.maskMapHeight - 1));
 
-    return this.maskMapData[(py * img.width + px) * 4] > 128;
+    return this.maskMapData[(py * this.maskMapWidth + px) * 4] > 128;
   }
 }
