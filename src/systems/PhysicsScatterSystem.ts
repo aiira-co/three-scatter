@@ -298,10 +298,18 @@ export class PhysicsScatterSystem extends BaseScatterSystem {
   /**
    * Re-run the physics simulation
    */
-  resimulate(): void {
+  async resimulate(): Promise<void> {
     this.simulatedPositions.clear();
     this.isSimulated = false;
+
+    for (const key of this.chunks.keys()) {
+      this.deactivateChunk(key);
+    }
+
+    this.chunks.clear();
+    this.syncRenderCount();
+
+    await this.runPhysicsSimulation();
     this.regenerateAll();
-    this.runPhysicsSimulation();
   }
 }

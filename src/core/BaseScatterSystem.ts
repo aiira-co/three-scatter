@@ -64,6 +64,7 @@ export abstract class BaseScatterSystem extends THREE.Group {
       this.config.source,
       this.config.maxInstances
     );
+    this.converter.setRenderCount(0);
 
     this.debugGroup = new THREE.Group();
     this.debugMaterial = new THREE.LineBasicMaterial({
@@ -115,25 +116,33 @@ export abstract class BaseScatterSystem extends THREE.Group {
     if (this.isInitialized) return;
     if (this.initPromise) return this.initPromise;
 
-    this.initPromise = (async () => {
+    this.initPromise = this.initializeInternal();
+
+    try {
+      await this.initPromise;
+    } finally {
+      this.initPromise = null;
+    }
+  }
+
+  private async initializeInternal(): Promise<void> {
     // Load density map if configured
     if (this.config.densityMap?.textureUrl) {
       await this.loadDensityMap();
     }
 
     await this.initializeDistribution();
+
     // Add all instanced meshes to this Group
     for (const mesh of this.converter.getInstancedMeshes()) {
       this.add(mesh);
     }
-    this.isInitialized = true;
-    if (this.config.showChunksDebug) this.updateDebugVisuals();
-    })();
 
-    try {
-      await this.initPromise;
-    } finally {
-      this.initPromise = null;
+    this.isInitialized = true;
+    this.syncRenderCount();
+
+    if (this.config.showChunksDebug) {
+      this.updateDebugVisuals();
     }
   }
 
@@ -191,6 +200,7 @@ export abstract class BaseScatterSystem extends THREE.Group {
     // Update frustum for culling
     this.updateFrustum(camera);
     this.updateChunks();
+    this.syncRenderCount();
   }
 
   /**
@@ -317,6 +327,7 @@ export abstract class BaseScatterSystem extends THREE.Group {
     }
     this.chunks.clear();
     this.updateChunks();
+    this.syncRenderCount();
     this.emitStatsChanged();
   }
 
@@ -429,6 +440,11 @@ export abstract class BaseScatterSystem extends THREE.Group {
     this.emitStatsChanged();
   }
 
+  protected syncRenderCount(): void {
+    const maxId = this.instancePool.getHighestActiveId();
+    this.converter.setRenderCount(maxId + 1);
+  }
+
   protected emitStatsChanged(): void {
     this.config.events?.onStatsChanged?.(this.getStats());
   }
@@ -478,7 +494,8 @@ export abstract class BaseScatterSystem extends THREE.Group {
   protected createInstanceTransform(
     position: THREE.Vector3,
     rng: SeededRandom,
-    normal?: THREE.Vector3
+    normal?: THREE.Vector3,
+    noiseGen?: PerlinNoise
   ): { position: THREE.Vector3; rotation: THREE.Euler; scale: THREE.Vector3 } {
     position.y += this.config.heightOffset;
 
@@ -491,7 +508,17 @@ export abstract class BaseScatterSystem extends THREE.Group {
       rotation.y += rng.range(...this.config.rotationRange);
     }
 
-    const baseScale = rng.range(...this.config.scaleRange);
+    let baseScale = rng.range(...this.config.scaleRange);
+
+    // Apply noise-based scale variation when enabled
+    if (this.config.noiseDistribution.enabled && noiseGen && this.config.noiseDistribution.scaleVariation > 0) {
+      const noiseVal = this.getNoiseValue(position.x, position.z, noiseGen);
+      // noiseVal is typically 0-1; remap to (1 - variation) .. (1 + variation)
+      const variation = this.config.noiseDistribution.scaleVariation;
+      const scaleMod = 1.0 + (noiseVal * 2.0 - 1.0) * variation;
+      baseScale *= Math.max(0.01, scaleMod);
+    }
+
     const scale = new THREE.Vector3(baseScale, baseScale, baseScale);
 
     return { position, rotation, scale };

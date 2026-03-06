@@ -8,6 +8,10 @@ import { SeededRandom } from '../utils';
 export interface HeightmapScatterConfig extends BaseScatterConfig {
   /** World size in units */
   worldSize: number;
+  /** World size on Z axis (defaults to worldSize for square worlds) */
+  worldSizeZ?: number;
+  /** World origin (min X, min Z). Defaults to centered world: (-worldSize/2, -worldSize/2) */
+  worldOrigin?: THREE.Vector2;
   /** URL to height map image */
   heightMapUrl?: string;
   /** Direct height map data (RGBA) */
@@ -38,13 +42,19 @@ export class HeightmapScatterSystem extends BaseScatterSystem {
   private maskMapData: Uint8Array | Uint8ClampedArray | null = null;
   private maskMapWidth = 0;
   private maskMapHeight = 0;
-  private worldSize: number;
+  private worldSizeX: number;
+  private worldSizeZ: number;
+  private worldOrigin: THREE.Vector2;
   private heightMapScale: number;
   private slopeLimit: number;
 
   constructor(config: HeightmapScatterConfig) {
     super(config);
-    this.worldSize = config.worldSize;
+    this.worldSizeX = config.worldSize;
+    this.worldSizeZ = config.worldSizeZ ?? config.worldSize;
+    this.worldOrigin = config.worldOrigin
+      ? config.worldOrigin.clone()
+      : new THREE.Vector2(-this.worldSizeX / 2, -this.worldSizeZ / 2);
     this.heightMapScale = config.heightMapScale ?? 0.2;
     this.slopeLimit = config.slopeLimit ?? 45;
     this.init();
@@ -87,7 +97,10 @@ export class HeightmapScatterSystem extends BaseScatterSystem {
     const cameraPos = camera.position;
     const visRange = this.config.visibilityRange;
     const chunkSize = this.config.chunkSize;
-    const halfWorld = this.worldSize / 2;
+    const minWorldX = this.worldOrigin.x;
+    const minWorldZ = this.worldOrigin.y;
+    const maxWorldX = minWorldX + this.worldSizeX;
+    const maxWorldZ = minWorldZ + this.worldSizeZ;
 
     const activeChunkKeys = new Set<string>();
 
@@ -101,7 +114,7 @@ export class HeightmapScatterSystem extends BaseScatterSystem {
         const chunkX = x + chunkSize / 2;
         const chunkZ = z + chunkSize / 2;
 
-        if (Math.abs(chunkX) > halfWorld || Math.abs(chunkZ) > halfWorld) continue;
+        if (chunkX < minWorldX || chunkX > maxWorldX || chunkZ < minWorldZ || chunkZ > maxWorldZ) continue;
 
         const key = this.getChunkKey(chunkX, chunkZ);
         const dx = chunkX - cameraPos.x;
@@ -169,7 +182,7 @@ export class HeightmapScatterSystem extends BaseScatterSystem {
       if (instanceId === null) break;
 
       const position = new THREE.Vector3(x, height, z);
-      const transform = this.createInstanceTransform(position, rng, normal);
+      const transform = this.createInstanceTransform(position, rng, normal, chunk.noiseGenerator ?? undefined);
 
       this.converter.setInstanceTransform(instanceId, transform.position, transform.rotation, transform.scale);
       chunk.instances.push(instanceId);
@@ -205,10 +218,9 @@ export class HeightmapScatterSystem extends BaseScatterSystem {
   }
 
   private worldToUV(worldX: number, worldZ: number): { u: number; v: number } {
-    const halfWorld = this.worldSize / 2;
     return {
-      u: (worldX + halfWorld) / this.worldSize,
-      v: (worldZ + halfWorld) / this.worldSize
+      u: (worldX - this.worldOrigin.x) / this.worldSizeX,
+      v: (worldZ - this.worldOrigin.y) / this.worldSizeZ
     };
   }
 

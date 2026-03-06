@@ -299,6 +299,16 @@ export class MeshToInstancedMeshConverter {
   }
 
   /**
+   * Update GPU render count without resizing internal instance capacity.
+   */
+  setRenderCount(count: number): void {
+    const safeCount = Math.max(0, Math.min(count, this._instanceCount));
+    for (const meshInfo of this._meshInfos) {
+      meshInfo.instancedMesh.count = safeCount;
+    }
+  }
+
+  /**
    * Dynamically resize instance count
    */
   setInstanceCount(newCount: number): void {

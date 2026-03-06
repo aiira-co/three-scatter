@@ -56,6 +56,15 @@ export class InstancePool {
   }
 
   /**
+   * Get highest active instance ID.
+   * Returns -1 when no instances are active.
+   */
+  getHighestActiveId(): number {
+    if (this.activeInstances.size === 0) return -1;
+    return Math.max(...Array.from(this.activeInstances));
+  }
+
+  /**
    * Clear all instances from the pool
    */
   clear(): void {
