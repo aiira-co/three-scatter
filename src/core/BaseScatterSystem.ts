@@ -30,6 +30,9 @@ export abstract class BaseScatterSystem extends THREE.Group {
   // Density map
   protected densityMapTexture: THREE.Texture | null = null;
   protected densityMapData: Uint8Array | null = null;
+  /** Raster width/height for densityMapData (set by loadDensityMap or setDensityMapImageData). */
+  protected densityMapWidth = 0;
+  protected densityMapHeight = 0;
 
   constructor(config: BaseScatterConfig) {
     super();
@@ -126,7 +129,7 @@ export abstract class BaseScatterSystem extends THREE.Group {
   }
 
   private async initializeInternal(): Promise<void> {
-    // Load density map if configured
+    // Load density map if configured with a URL
     if (this.config.densityMap?.textureUrl) {
       await this.loadDensityMap();
     }
@@ -162,13 +165,71 @@ export abstract class BaseScatterSystem extends THREE.Group {
     const ctx = canvas.getContext('2d')!;
     ctx.drawImage(img, 0, 0);
     this.densityMapData = new Uint8Array(ctx.getImageData(0, 0, canvas.width, canvas.height).data);
+    this.densityMapWidth = canvas.width;
+    this.densityMapHeight = canvas.height;
+  }
+
+  /**
+   * Release GPU texture used when the density map was loaded from a URL.
+   * CPU-side {@link densityMapData} is unchanged until the next load/set.
+   */
+  protected disposeDensityMapTexture(): void {
+    if (this.densityMapTexture) {
+      this.densityMapTexture.dispose();
+      this.densityMapTexture = null;
+    }
+  }
+
+  /**
+   * Replace density-map samples from packed RGBA {@link ImageData} and regenerate all chunks.
+   * Does not require {@link densityMapTexture}; sampling uses {@link densityMapWidth} / {@link densityMapHeight}.
+   *
+   * Use this for live authoring (e.g. foliage mask painting) to avoid reloading a data URL each stroke.
+   */
+  setDensityMapImageData(imageData: ImageData): void {
+    if (!this.config.densityMap) {
+      console.warn('[BaseScatterSystem] setDensityMapImageData: densityMap is not configured');
+      return;
+    }
+    if (!this.isInitialized) {
+      console.warn('[BaseScatterSystem] setDensityMapImageData: scatter system not initialized yet');
+      return;
+    }
+
+    this.disposeDensityMapTexture();
+    this.densityMapData = new Uint8Array(imageData.data);
+    this.densityMapWidth = imageData.width;
+    this.densityMapHeight = imageData.height;
+
+    this.regenerateAll();
+  }
+
+  /**
+   * Reload {@link densityMapData} from {@link BaseScatterConfig.densityMap} textureUrl and regenerate chunks.
+   */
+  async reloadDensityMapFromConfiguredUrl(): Promise<void> {
+    if (!this.config.densityMap?.textureUrl) {
+      return;
+    }
+    if (!this.isInitialized) {
+      console.warn('[BaseScatterSystem] reloadDensityMapFromConfiguredUrl: scatter system not initialized yet');
+      return;
+    }
+
+    this.disposeDensityMapTexture();
+    await this.loadDensityMap();
+    this.regenerateAll();
   }
 
   /**
    * Sample density map at world position (returns 0-1)
    */
   protected sampleDensityMap(worldX: number, worldZ: number): number {
-    if (!this.densityMapData || !this.densityMapTexture || !this.config.densityMap) return 1.0;
+    if (!this.densityMapData || !this.config.densityMap) return 1.0;
+
+    const w = this.densityMapWidth;
+    const h = this.densityMapHeight;
+    if (w <= 0 || h <= 0) return 1.0;
 
     const bounds = this.config.densityMap.worldBounds;
     const u = (worldX - bounds.min.x) / (bounds.max.x - bounds.min.x);
@@ -176,10 +237,9 @@ export abstract class BaseScatterSystem extends THREE.Group {
 
     if (u < 0 || u > 1 || v < 0 || v > 1) return 1.0;
 
-    const img = this.densityMapTexture.image as HTMLImageElement;
-    const px = Math.floor(u * (img.width - 1));
-    const py = Math.floor((1 - v) * (img.height - 1));
-    const idx = (py * img.width + px) * 4;
+    const px = Math.floor(u * (w - 1));
+    const py = Math.floor((1 - v) * (h - 1));
+    const idx = (py * w + px) * 4;
 
     const channelOffset = { 'r': 0, 'g': 1, 'b': 2, 'a': 3 };
     const channel = this.config.densityMap.channel ?? 'r';
@@ -336,6 +396,10 @@ export abstract class BaseScatterSystem extends THREE.Group {
    */
   dispose(): void {
     this.regenerateAll();
+    this.disposeDensityMapTexture();
+    this.densityMapData = null;
+    this.densityMapWidth = 0;
+    this.densityMapHeight = 0;
     // Remove instanced meshes from this Group
     for (const mesh of this.converter.getInstancedMeshes()) {
       this.remove(mesh);

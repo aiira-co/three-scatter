@@ -62,8 +62,8 @@ export interface LODConfig {
  * Density map configuration for texture-based density modulation
  */
 export interface DensityMapConfig {
-  /** URL to density map texture */
-  textureUrl: string;
+  /** URL to density map texture (optional if you only use {@link BaseScatterSystem.setDensityMapImageData}) */
+  textureUrl?: string;
   /** Which channel to sample (default: 'r') */
   channel?: 'r' | 'g' | 'b' | 'a';
   /** World bounds the texture maps to */
