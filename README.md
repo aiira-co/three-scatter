@@ -115,7 +115,8 @@ interface BaseScatterConfig {
   };
 
   densityMap?: {
-    textureUrl: string;
+    /** Optional when you supply pixels via {@link BaseScatterSystem.setDensityMapImageData} after `init()`. */
+    textureUrl?: string;
     channel?: 'r' | 'g' | 'b' | 'a';
     worldBounds: THREE.Box2;
     multiplier?: number;
@@ -209,6 +210,40 @@ const converter = scatter.getConverter();
 scatter.dispose();
 ```
 
+### Density map (texture URL vs live pixels)
+
+- If `densityMap.textureUrl` is set, the loader runs during `init()` and samples use the decoded RGBA buffer (and internal raster size).
+- If you omit `textureUrl` but still pass `densityMap` (bounds, channel, multiplier), call **`setDensityMapImageData(imageData)`** after **`await scatter.init()`** so placement has mask data. Until you do, sampling behaves as “no mask” (full density).
+- To refresh from the URL currently in `config.densityMap.textureUrl`, use **`await scatter.reloadDensityMapFromConfiguredUrl()`** (regenerates all chunks).
+
+```ts
+// A) URL-based (unchanged pattern)
+const scatterA = new HeightmapScatterSystem({
+  /* ... */,
+  densityMap: {
+    textureUrl: '/masks/biome.png',
+    channel: 'a',
+    worldBounds: new THREE.Box2(new THREE.Vector2(0, 0), new THREE.Vector2(1024, 1024))
+  }
+});
+await scatterA.init();
+
+// B) Live pixels (no URL decode on each stroke)
+const scatterB = new HeightmapScatterSystem({
+  /* ... */,
+  densityMap: {
+    channel: 'a',
+    worldBounds: new THREE.Box2(new THREE.Vector2(0, 0), new THREE.Vector2(1024, 1024)),
+    multiplier: 1
+  }
+});
+await scatterB.init();
+scatterB.setDensityMapImageData(myImageData); // RGBA ImageData matching worldBounds aspect
+
+// C) Refresh after changing config.densityMap.textureUrl at runtime
+await scatterA.reloadDensityMapFromConfiguredUrl();
+```
+
 ## ScatterBlender
 
 `ScatterBlender` manages multiple scatter systems as layers and updates them on an interval.
@@ -283,6 +318,23 @@ if (saved) {
 - Constructors call `init()` internally; `await init()` is still useful when you need deterministic readiness before first update.
 - Frustum culling is implemented in chunk-based area/volume systems and can be toggled with `setFrustumCulling`.
 - `PhysicsScatterSystem` runs CPU simulation in JS; high density + high simulation steps can be expensive.
+
+## Migration / changelog (v1.2.5 → v1.2.6)
+
+**Type change (may affect TypeScript builds)**
+
+- `DensityMapConfig.textureUrl` is now **optional**. Callers that construct a `DensityMapConfig` literal no longer need a dummy URL when they only intend to use **`setDensityMapImageData()`** after initialization.
+
+**Runtime behavior**
+
+- If `densityMap` is present **without** `textureUrl` and you never call **`setDensityMapImageData`**, density sampling falls through to the default (**full density**, same as having no density map). Previously, a config object that omitted `textureUrl` was not a supported shape; now it is explicitly “URL deferred / pixels supplied later”.
+- Density sampling uses internal raster dimensions (`densityMapWidth` / `densityMapHeight`) and **`densityMapData`** only. A loaded **`densityMapTexture`** is not required for sampling after pixels are in memory.
+- **`dispose()`** now also disposes the density-map GPU texture (when present) and clears **`densityMapData`** / dimensions. Do not use a scatter instance after `dispose()`.
+
+**New APIs on `BaseScatterSystem`**
+
+- **`setDensityMapImageData(imageData: ImageData): void`** — Replace mask/density samples from canvas-style RGBA data and **`regenerateAll()`**. Intended for live authoring (e.g. foliage masks) without reloading a data URL each stroke.
+- **`reloadDensityMapFromConfiguredUrl(): Promise<void>`** — Reload from `config.densityMap.textureUrl` and regenerate.
 
 ## Migration Notes (Older README -> v1.2.5)
 
