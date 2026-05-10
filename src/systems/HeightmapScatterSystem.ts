@@ -28,6 +28,13 @@ export interface HeightmapScatterConfig extends BaseScatterConfig {
   maskMapSize?: [number, number];
   /** Maximum slope in degrees for placement */
   slopeLimit?: number;
+  /**
+   * When the scatter group is parented under transformed objects, instance matrices are expressed in
+   * local space while placement uses world XZ + sampled height. Premultiply each composed instance
+   * matrix by this inverse (typically `parent.matrixWorld.clone().invert()`) so instances align with
+   * the sampled world surface.
+   */
+  scatterSpaceInverse?: THREE.Matrix4;
 }
 
 /**
@@ -47,6 +54,7 @@ export class HeightmapScatterSystem extends BaseScatterSystem {
   private worldOrigin: THREE.Vector2;
   private heightMapScale: number;
   private slopeLimit: number;
+  private scatterSpaceInverse: THREE.Matrix4 | null = null;
 
   constructor(config: HeightmapScatterConfig) {
     super(config);
@@ -57,6 +65,7 @@ export class HeightmapScatterSystem extends BaseScatterSystem {
       : new THREE.Vector2(-this.worldSizeX / 2, -this.worldSizeZ / 2);
     this.heightMapScale = config.heightMapScale ?? 0.2;
     this.slopeLimit = config.slopeLimit ?? 45;
+    this.scatterSpaceInverse = config.scatterSpaceInverse?.clone() ?? null;
     this.init();
   }
 
@@ -183,6 +192,18 @@ export class HeightmapScatterSystem extends BaseScatterSystem {
 
       const position = new THREE.Vector3(x, height, z);
       const transform = this.createInstanceTransform(position, rng, normal, chunk.noiseGenerator ?? undefined);
+
+      if (this.scatterSpaceInverse) {
+        const m = new THREE.Matrix4().compose(
+          transform.position,
+          new THREE.Quaternion().setFromEuler(transform.rotation),
+          transform.scale
+        );
+        m.premultiply(this.scatterSpaceInverse);
+        const q = new THREE.Quaternion();
+        m.decompose(transform.position, q, transform.scale);
+        transform.rotation.setFromQuaternion(q);
+      }
 
       this.converter.setInstanceTransform(instanceId, transform.position, transform.rotation, transform.scale);
       chunk.instances.push(instanceId);

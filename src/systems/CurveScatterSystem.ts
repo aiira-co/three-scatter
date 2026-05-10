@@ -124,9 +124,6 @@ export class CurveScatterSystem extends BaseScatterSystem {
         : 1;
 
       for (let w = 0; w < distributionsPerPoint; w++) {
-        const instanceId = this.instancePool.acquire();
-        if (instanceId === null) break;
-
         const position = point.clone();
 
         // Apply width distribution
@@ -143,6 +140,13 @@ export class CurveScatterSystem extends BaseScatterSystem {
           const offset = rng.range(...this.offsetRange);
           position.add(perpendicular.multiplyScalar(offset));
         }
+
+        if (!this.shouldPlaceInstance(position.x, position.z, chunk.noiseGenerator!, rng)) {
+          continue;
+        }
+
+        const instanceId = this.instancePool.acquire();
+        if (instanceId === null) break;
 
         // Calculate rotation aligned with tangent
         const rotation = new THREE.Euler();

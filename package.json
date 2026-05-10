@@ -1,6 +1,6 @@
 {
   "name": "@interverse/three-scatter",
-  "version": "1.2.6",
+  "version": "1.2.8",
   "description": "High-performance instanced scatter systems for Three.js with chunk-based LOD",
   "main": "dist/index.js",
   "module": "dist/esm/index.js",
