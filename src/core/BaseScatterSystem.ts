@@ -272,7 +272,11 @@ export abstract class BaseScatterSystem extends THREE.Group {
       camera.projectionMatrix,
       camera.matrixWorldInverse
     );
-    this.frustum.setFromProjectionMatrix(this.frustumMatrix);
+    this.frustum.setFromProjectionMatrix(
+      this.frustumMatrix,
+      camera.coordinateSystem,
+      camera.reversedDepth
+    );
   }
 
   /**

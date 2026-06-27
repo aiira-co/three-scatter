@@ -4,9 +4,10 @@ import {
   InstancedMesh,
   Matrix4,
   Mesh,
+  Object3D,
   Quaternion,
-  Vector3,
-  Scene
+  Scene,
+  Vector3
 } from 'three';
 
 /**
@@ -65,16 +66,18 @@ export class MeshToInstancedMeshConverter {
     const meshes: Mesh[] = [];
 
     if (this._sourceMesh instanceof Mesh) {
-      meshes.push(this._sourceMesh);
+      if (this.isVisibleInSourceTree(this._sourceMesh)) {
+        meshes.push(this._sourceMesh);
+      }
 
       this._sourceMesh.traverse((child) => {
-        if (child instanceof Mesh && child !== this._sourceMesh) {
+        if (child instanceof Mesh && child !== this._sourceMesh && this.isVisibleInSourceTree(child)) {
           meshes.push(child);
         }
       });
     } else if (this._sourceMesh instanceof Group) {
       this._sourceMesh.traverse((child) => {
-        if (child instanceof Mesh) {
+        if (child instanceof Mesh && this.isVisibleInSourceTree(child)) {
           meshes.push(child);
         }
       });
@@ -85,6 +88,20 @@ export class MeshToInstancedMeshConverter {
     }
 
     this.resetAllInstances();
+  }
+
+  private isVisibleInSourceTree(object: Mesh): boolean {
+    let current: Object3D | null = object;
+    while (current) {
+      if (!current.visible) {
+        return false;
+      }
+      if (current === this._sourceMesh) {
+        return true;
+      }
+      current = current.parent;
+    }
+    return true;
   }
 
   private createInstancedMeshFromMesh(mesh: Mesh): void {
@@ -158,6 +175,18 @@ export class MeshToInstancedMeshConverter {
     this._tempMatrix.compose(this._tempPosition, this._tempQuaternion, this._tempScale);
     meshInfo.instancedMesh.setMatrixAt(instanceIndex, this._tempMatrix);
     meshInfo.instancedMesh.instanceMatrix.needsUpdate = true;
+    this.invalidateInstancedMeshBounds(meshInfo.instancedMesh);
+  }
+
+  private invalidateInstancedMeshBounds(instancedMesh: InstancedMesh): void {
+    instancedMesh.boundingBox = null;
+    instancedMesh.boundingSphere = null;
+  }
+
+  private invalidateBounds(): void {
+    for (const meshInfo of this._meshInfos) {
+      this.invalidateInstancedMeshBounds(meshInfo.instancedMesh);
+    }
   }
 
   // ============================================
@@ -249,6 +278,7 @@ export class MeshToInstancedMeshConverter {
     for (const meshInfo of this._meshInfos) {
       meshInfo.instancedMesh.setMatrixAt(instanceIndex, zeroMatrix);
       meshInfo.instancedMesh.instanceMatrix.needsUpdate = true;
+      this.invalidateInstancedMeshBounds(meshInfo.instancedMesh);
     }
   }
 
@@ -306,6 +336,7 @@ export class MeshToInstancedMeshConverter {
     for (const meshInfo of this._meshInfos) {
       meshInfo.instancedMesh.count = safeCount;
     }
+    this.invalidateBounds();
   }
 
   /**
@@ -333,6 +364,7 @@ export class MeshToInstancedMeshConverter {
     for (const meshInfo of this._meshInfos) {
       meshInfo.instancedMesh.count = newCount;
       meshInfo.instancedMesh.instanceMatrix.needsUpdate = true;
+      this.invalidateInstancedMeshBounds(meshInfo.instancedMesh);
     }
   }
 
