@@ -73,6 +73,32 @@ export interface DensityMapConfig {
 }
 
 /**
+ * Chunk residency policy.
+ *
+ * By default a chunk's lifetime is tied to the view frustum: leaving it tears the
+ * chunk down and releases its instances, so turning back re-runs the whole
+ * placement pass (sampling, slope rejection, masking, transform composition).
+ * With retention enabled, residency depends on distance alone and the frustum
+ * only decides whether a resident chunk is drawn.
+ */
+export interface ChunkRetentionConfig {
+  /** Retain chunks by distance instead of by frustum. */
+  enabled: boolean;
+  /**
+   * Extra fraction of `visibilityRange` a resident chunk is kept for before being
+   * released. Gives load/unload hysteresis so a camera sitting on the boundary
+   * cannot thrash a chunk. Default 0.25.
+   */
+  unloadMargin?: number;
+  /**
+   * Lets an owner veto a chunk being shown -- for occlusion or zone culling that
+   * lives outside this package. Consulted whenever frustum visibility changes, so
+   * the two systems cannot fight over the same instances frame to frame.
+   */
+  isExternallyHidden?: (chunkKey: string) => boolean;
+}
+
+/**
  * Base configuration shared by all scatter systems
  */
 export interface BaseScatterConfig {
@@ -106,6 +132,8 @@ export interface BaseScatterConfig {
   lod?: LODConfig;
   /** Density map for texture-based density variation */
   densityMap?: DensityMapConfig;
+  /** Chunk residency policy. Omitted means frustum-tied lifetime, as before. */
+  chunkRetention?: ChunkRetentionConfig;
 }
 
 /**
