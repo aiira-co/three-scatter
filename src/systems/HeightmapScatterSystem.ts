@@ -37,6 +37,9 @@ export interface HeightmapScatterConfig extends BaseScatterConfig {
   scatterSpaceInverse?: THREE.Matrix4;
 }
 
+/** Default hysteresis band, as a fraction of visibilityRange. */
+const DEFAULT_CHUNK_UNLOAD_MARGIN = 0.25;
+
 /**
  * Scatter system using heightmap textures for terrain-based distribution
  */
@@ -55,6 +58,12 @@ export class HeightmapScatterSystem extends BaseScatterSystem {
   private heightMapScale: number;
   private slopeLimit: number;
   private scatterSpaceInverse: THREE.Matrix4 | null = null;
+  /**
+   * Chunks selected for this frame, reused between updates so the residency scan
+   * stays allocation-free.
+   */
+  private pendingChunks: { key: string; x: number; z: number; visible: boolean }[] = [];
+  private pendingCount = 0;
 
   constructor(config: HeightmapScatterConfig) {
     super(config);
@@ -100,24 +109,50 @@ export class HeightmapScatterSystem extends BaseScatterSystem {
     }
   }
 
+  private queuePendingChunk(key: string, x: number, z: number, visible: boolean): void {
+    const entry = this.pendingChunks[this.pendingCount];
+    if (entry) {
+      entry.key = key;
+      entry.x = x;
+      entry.z = z;
+      entry.visible = visible;
+    } else {
+      this.pendingChunks.push({ key, x, z, visible });
+    }
+    this.pendingCount++;
+  }
+
   protected updateChunks(): void {
     const camera = this.getCurrentCamera();
     if (!camera) return;
     const cameraPos = camera.position;
     const visRange = this.config.visibilityRange;
     const chunkSize = this.config.chunkSize;
+    const retention = this.config.chunkRetention;
+    const retentionEnabled = retention?.enabled === true;
+    // Chunks are released only past the larger radius, so a camera hovering on
+    // the load boundary cannot flip a chunk on and off frame to frame.
+    const unloadRange = retentionEnabled
+      ? visRange * (1 + Math.max(0, retention?.unloadMargin ?? DEFAULT_CHUNK_UNLOAD_MARGIN))
+      : visRange;
+    const scanRange = retentionEnabled ? unloadRange : visRange;
     const minWorldX = this.worldOrigin.x;
     const minWorldZ = this.worldOrigin.y;
     const maxWorldX = minWorldX + this.worldSizeX;
     const maxWorldZ = minWorldZ + this.worldSizeZ;
 
     const activeChunkKeys = new Set<string>();
+    this.pendingCount = 0;
 
-    const startX = Math.floor((cameraPos.x - visRange) / chunkSize) * chunkSize;
-    const endX = Math.ceil((cameraPos.x + visRange) / chunkSize) * chunkSize;
-    const startZ = Math.floor((cameraPos.z - visRange) / chunkSize) * chunkSize;
-    const endZ = Math.ceil((cameraPos.z + visRange) / chunkSize) * chunkSize;
+    const startX = Math.floor((cameraPos.x - scanRange) / chunkSize) * chunkSize;
+    const endX = Math.ceil((cameraPos.x + scanRange) / chunkSize) * chunkSize;
+    const startZ = Math.floor((cameraPos.z - scanRange) / chunkSize) * chunkSize;
+    const endZ = Math.ceil((cameraPos.z + scanRange) / chunkSize) * chunkSize;
 
+    // Pass 1 -- decide residency only. Nothing is populated yet: instances come
+    // from a pool sized to the visible disc, so filling incoming chunks before
+    // outgoing ones are released starves them, and a starved chunk stays active
+    // and underfilled with nothing to repair it.
     for (let x = startX; x <= endX; x += chunkSize) {
       for (let z = startZ; z <= endZ; z += chunkSize) {
         const chunkX = x + chunkSize / 2;
@@ -129,26 +164,54 @@ export class HeightmapScatterSystem extends BaseScatterSystem {
         const dx = chunkX - cameraPos.x;
         const dz = chunkZ - cameraPos.z;
         const distance = Math.sqrt(dx * dx + dz * dz);
+        const resident = this.chunks.get(key)?.isActive === true;
+
+        if (retentionEnabled) {
+          if (resident ? distance > unloadRange : distance > visRange) continue;
+
+          activeChunkKeys.add(key);
+          // Retained past visRange for hysteresis, but never *drawn* past it:
+          // otherwise visible coverage would depend on where the camera had
+          // previously been and would extend beyond the configured range.
+          const bounds = this.getChunkBoundsInto(chunkX, chunkZ, this.chunkBoundsScratch);
+          this.queuePendingChunk(key, chunkX, chunkZ, distance <= visRange && this.isChunkInFrustum(bounds));
+          continue;
+        }
 
         if (distance <= visRange) {
-          // Frustum culling - skip chunks not visible
-          const chunkBounds = new THREE.Box3(
-            new THREE.Vector3(chunkX - chunkSize / 2, -1000, chunkZ - chunkSize / 2),
-            new THREE.Vector3(chunkX + chunkSize / 2, 1000, chunkZ + chunkSize / 2)
-          );
+          const chunkBounds = this.getChunkBoundsInto(chunkX, chunkZ, this.chunkBoundsScratch);
           if (!this.isChunkInFrustum(chunkBounds)) continue;
 
           activeChunkKeys.add(key);
-          if (!this.chunks.has(key) || !this.chunks.get(key)!.isActive) {
-            this.activateChunk(chunkX, chunkZ);
-          }
+          this.queuePendingChunk(key, chunkX, chunkZ, true);
         }
       }
     }
 
+    // Pass 2 -- release everything leaving, returning its instances to the pool.
     for (const [key, chunk] of this.chunks.entries()) {
       if (!activeChunkKeys.has(key) && chunk.isActive) {
         this.deactivateChunk(key);
+      }
+    }
+
+    // Pass 3 -- populate against the freed pool.
+    for (let i = 0; i < this.pendingCount; i++) {
+      const pending = this.pendingChunks[i];
+      const existing = this.chunks.get(pending.key);
+
+      if (!existing || !existing.isActive) {
+        this.activateChunk(pending.x, pending.z);
+      } else if (
+        this.chunkNeedsLODRefresh(existing, pending.x, pending.z)
+        || this.chunkNeedsStarvationRepair(existing)
+      ) {
+        this.deactivateChunk(pending.key);
+        this.activateChunk(pending.x, pending.z);
+      }
+
+      if (retentionEnabled) {
+        this.setChunkVisible(pending.key, pending.visible);
       }
     }
   }
@@ -167,6 +230,7 @@ export class HeightmapScatterSystem extends BaseScatterSystem {
     const chunkSeed = ((centerX * 73856093) ^ (centerZ * 19349663) ^ this.config.randomSeed) >>> 0;
     const rng = new SeededRandom(chunkSeed);
 
+    chunk.starvedGeneration = undefined;
     let placed = 0;
     let attempts = 0;
     const maxAttempts = targetCount * 3;
@@ -188,7 +252,12 @@ export class HeightmapScatterSystem extends BaseScatterSystem {
       if (slope > this.slopeLimit) continue;
 
       const instanceId = this.instancePool.acquire();
-      if (instanceId === null) break;
+      if (instanceId === null) {
+        // Underfilled: remember the pool state so this chunk can be retried once
+        // capacity is actually released, rather than staying permanently thin.
+        chunk.starvedGeneration = this.poolReleaseGeneration;
+        break;
+      }
 
       const position = new THREE.Vector3(x, height, z);
       const transform = this.createInstanceTransform(position, rng, normal, chunk.noiseGenerator ?? undefined);

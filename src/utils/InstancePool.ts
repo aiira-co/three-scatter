@@ -7,6 +7,12 @@ export class InstancePool {
   private freeIds: number[] = [];
   private nextId: number = 0;
   private maxInstances: number;
+  /**
+   * Highest currently-active id, maintained incrementally so
+   * {@link getHighestActiveId} stays O(1) in the common case.
+   * -1 when no instances are active.
+   */
+  private highestActiveId: number = -1;
 
   constructor(maxInstances: number) {
     this.maxInstances = maxInstances;
@@ -21,16 +27,18 @@ export class InstancePool {
     if (this.freeIds.length > 0) {
       const id = this.freeIds.pop()!;
       this.activeInstances.add(id);
+      if (id > this.highestActiveId) this.highestActiveId = id;
       return id;
     }
-    
+
     // Otherwise allocate a new ID if under limit
     if (this.nextId < this.maxInstances) {
       const id = this.nextId++;
       this.activeInstances.add(id);
+      if (id > this.highestActiveId) this.highestActiveId = id;
       return id;
     }
-    
+
     return null;
   }
 
@@ -41,6 +49,14 @@ export class InstancePool {
   release(id: number): void {
     if (this.activeInstances.delete(id)) {
       this.freeIds.push(id);
+      // Only the top of the range can lower the high-water mark. Walking down
+      // is amortized: each step permanently lowers the mark until an acquire
+      // raises it again, so total work is bounded by the allocated id range.
+      if (id === this.highestActiveId) {
+        let next = this.highestActiveId - 1;
+        while (next >= 0 && !this.activeInstances.has(next)) next--;
+        this.highestActiveId = next;
+      }
     }
   }
 
@@ -60,8 +76,7 @@ export class InstancePool {
    * Returns -1 when no instances are active.
    */
   getHighestActiveId(): number {
-    if (this.activeInstances.size === 0) return -1;
-    return Math.max(...Array.from(this.activeInstances));
+    return this.highestActiveId;
   }
 
   /**
@@ -71,6 +86,7 @@ export class InstancePool {
     this.activeInstances.clear();
     this.freeIds = [];
     this.nextId = 0;
+    this.highestActiveId = -1;
   }
 
   /**

@@ -8,6 +8,12 @@ import { MeshToInstancedMeshConverter } from '../converter/MeshToInstancedMeshCo
 let currentCamera: THREE.Camera | null = null;
 
 /**
+ * How much denser a blended chunk must have become before it is worth rebuilding.
+ * Wide on purpose: the check runs per frame while a camera approaches.
+ */
+const LOD_DENSITY_REFRESH_RATIO = 1.25;
+
+/**
  * Abstract base class for all scatter systems.
  * Extends THREE.Group so it can be added to any scene.
  * Call update(camera) each frame for LOD calculations.
@@ -26,6 +32,13 @@ export abstract class BaseScatterSystem extends THREE.Group {
   protected frustum: THREE.Frustum = new THREE.Frustum();
   protected frustumMatrix: THREE.Matrix4 = new THREE.Matrix4();
   protected frustumCullingEnabled: boolean = true;
+  /** Scratch bounds for per-frame chunk frustum tests; see {@link getChunkBoundsInto}. */
+  protected chunkBoundsScratch: THREE.Box3 = new THREE.Box3();
+  /**
+   * Bumped every time a chunk returns instances to the pool. Lets a starved chunk
+   * tell "capacity may have freed since I gave up" from "nothing has changed".
+   */
+  protected poolReleaseGeneration = 0;
 
   // Density map
   protected densityMapTexture: THREE.Texture | null = null;
@@ -280,6 +293,43 @@ export abstract class BaseScatterSystem extends THREE.Group {
   }
 
   /**
+   * Write a chunk's world bounds into `target` instead of allocating.
+   *
+   * `updateChunks` tests every chunk in scan range every frame, so allocating a
+   * Box3 plus two Vector3s per candidate produced steady garbage proportional to
+   * the scan area.
+   */
+  protected getChunkBoundsInto(centerX: number, centerZ: number, target: THREE.Box3): THREE.Box3 {
+    const half = this.config.chunkSize / 2;
+    target.min.set(centerX - half, -1000, centerZ - half);
+    target.max.set(centerX + half, 1000, centerZ + half);
+    return target;
+  }
+
+  /**
+   * Show or hide a retained chunk's instances without discarding their placement.
+   *
+   * The converter keeps a CPU-side transform per instance, so `hideInstance` /
+   * `showInstance` round-trip exactly -- this is what makes frustum culling a
+   * draw decision rather than a reason to regenerate. Writes only happen when the
+   * resulting state actually changes, so calling this every frame is cheap.
+   */
+  protected setChunkVisible(chunkKey: string, visible: boolean): void {
+    const chunk = this.chunks.get(chunkKey);
+    if (!chunk || !chunk.isActive) return;
+
+    const vetoed = this.config.chunkRetention?.isExternallyHidden?.(chunkKey) === true;
+    const next = visible && !vetoed;
+    if (chunk.isVisible === next) return;
+
+    for (const instanceId of chunk.instances) {
+      if (next) this.converter.showInstance(instanceId);
+      else this.converter.hideInstance(instanceId);
+    }
+    chunk.isVisible = next;
+  }
+
+  /**
    * Check if a bounding box is visible in the frustum
    */
   protected isChunkInFrustum(bounds: THREE.Box3): boolean {
@@ -313,14 +363,18 @@ export abstract class BaseScatterSystem extends THREE.Group {
     // Find which LOD level this distance falls into
     for (let i = levels.length - 1; i >= 0; i--) {
       if (distance >= levels[i].distance) {
-        // Check for blending with next level
+        // Blend across the run-up to the NEXT threshold. Blending forward from
+        // this band's own start instead ramped toward the next density
+        // immediately and then snapped back once blendDistance elapsed -- with
+        // levels at 0/45/75 and blendDistance 10, density fell from 1.0 to 0.55
+        // over the first ten units and jumped back to 1.0 at the eleventh.
         if (blendDistance > 0 && i < levels.length - 1) {
           const nextLevel = levels[i + 1];
-          const transitionStart = levels[i].distance;
-          const transitionEnd = nextLevel.distance;
+          const transitionStart = Math.max(levels[i].distance, nextLevel.distance - blendDistance);
 
-          if (distance < transitionStart + blendDistance && distance < transitionEnd) {
-            const t = (distance - transitionStart) / blendDistance;
+          if (distance > transitionStart) {
+            const span = nextLevel.distance - transitionStart;
+            const t = span > 0 ? (distance - transitionStart) / span : 1;
             const clampedT = Math.min(1, Math.max(0, t));
             return levels[i].densityMultiplier * (1 - clampedT) + nextLevel.densityMultiplier * clampedT;
           }
@@ -330,6 +384,68 @@ export abstract class BaseScatterSystem extends THREE.Group {
     }
 
     return 1.0; // Full density for closest range
+  }
+
+  /**
+   * Discrete LOD band index for a chunk centre, or -1 when the chunk is nearer
+   * than the first threshold (full density) or no LOD is configured.
+   *
+   * Density LOD is only applied while a chunk is being populated, so a chunk
+   * activated far away keeps its sparse instance count as the camera closes in.
+   * Systems compare this against {@link ChunkData.lodBand} to notice that and
+   * rebuild the chunk at the denser setting.
+   */
+  protected getLODBandIndex(chunkCenterX: number, chunkCenterZ: number): number {
+    const camera = this.getCurrentCamera();
+    if (!camera || !this.config.lod?.levels?.length) return -1;
+
+    const dx = chunkCenterX - camera.position.x;
+    const dz = chunkCenterZ - camera.position.z;
+    const distance = Math.sqrt(dx * dx + dz * dz);
+
+    const levels = this.config.lod.levels;
+    for (let i = levels.length - 1; i >= 0; i--) {
+      if (distance >= levels[i].distance) return i;
+    }
+
+    return -1;
+  }
+
+  /**
+   * Whether a chunk should be rebuilt because it has moved into a denser LOD
+   * band than the one it was populated at.
+   *
+   * Deliberately one-directional: chunks moving outward keep their extra
+   * instances until they leave the visibility range entirely. Rebuilding in both
+   * directions would thrash any chunk sitting on a band boundary, and being
+   * denser than strictly required is never a visual regression.
+   */
+  protected chunkNeedsLODRefresh(chunk: ChunkData, centerX: number, centerZ: number): boolean {
+    if (!this.config.lod?.levels?.length) return false;
+    if (chunk.lodBand === undefined) return false;
+    if (this.getLODBandIndex(centerX, centerZ) < chunk.lodBand) return true;
+
+    // With blending the density varies continuously inside a band, so a chunk can
+    // be thinner than its band's nominal value and never trip the index check --
+    // a chunk populated inside a blend window keeps that reduced count even once
+    // the camera is on top of it. Compare the multiplier too, but only upward and
+    // only past a wide margin, so approaching a chunk cannot rebuild it per frame.
+    if ((this.config.lod.blendDistance ?? 0) > 0 && chunk.lodDensity !== undefined && chunk.lodDensity > 0) {
+      return this.getLODDensityMultiplier(centerX, centerZ) > chunk.lodDensity * LOD_DENSITY_REFRESH_RATIO;
+    }
+
+    return false;
+  }
+
+  /**
+   * Whether a chunk that ran out of pool capacity mid-population should be retried.
+   * Gated on a release having happened since, so an over-subscribed pool settles
+   * instead of rebuilding the same chunk forever.
+   */
+  protected chunkNeedsStarvationRepair(chunk: ChunkData): boolean {
+    if (chunk.starvedGeneration === undefined) return false;
+    if (chunk.starvedGeneration === this.poolReleaseGeneration) return false;
+    return this.instancePool.hasCapacity();
   }
 
   /**
@@ -477,7 +593,10 @@ export abstract class BaseScatterSystem extends THREE.Group {
       instances: [],
       isActive: true,
       noiseGenerator: noiseGen,
-      bounds: bounds
+      bounds: bounds,
+      lodBand: this.getLODBandIndex(x, z),
+      lodDensity: this.getLODDensityMultiplier(x, z),
+      isVisible: true
     };
 
     this.populateChunk(chunk, x, z, extraData);
@@ -502,6 +621,8 @@ export abstract class BaseScatterSystem extends THREE.Group {
 
     chunk.instances = [];
     chunk.isActive = false;
+    chunk.isVisible = false;
+    this.poolReleaseGeneration++;
 
     // Emit deactivation event
     this.config.events?.onChunkDeactivated?.(key);
