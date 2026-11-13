@@ -425,11 +425,15 @@ export abstract class BaseScatterSystem extends THREE.Group {
     chunks: { total: number; active: number };
     meshes: number;
   } {
+    let activeChunks = 0;
+    for (const chunk of this.chunks.values()) {
+      if (chunk.isActive) activeChunks++;
+    }
     return {
       instances: this.instancePool.getStats(),
       chunks: {
         total: this.chunks.size,
-        active: Array.from(this.chunks.values()).filter(c => c.isActive).length
+        active: activeChunks
       },
       meshes: this.converter.getMeshCount()
     };
