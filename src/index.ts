@@ -9,7 +9,8 @@ export type {
   ScatterStats,
   LODLevel,
   LODConfig,
-  DensityMapConfig
+  DensityMapConfig,
+  ChunkRetentionConfig
 } from './core';
 
 // Systems
@@ -41,7 +42,10 @@ export {
   SeededRandom,
   PerlinNoise,
   InstancePool,
-  ScatterSerializer
+  ScatterSerializer,
+  clampNormalTilt,
+  composeAlignedYaw,
+  violatesMinSpacing,
 } from './utils';
 
 export type {

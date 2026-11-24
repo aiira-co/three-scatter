@@ -7,6 +7,7 @@ export class InstancePool {
   private freeIds: number[] = [];
   private nextId: number = 0;
   private maxInstances: number;
+  private releaseGeneration: number = 0;
   /** Highest active id, or -1. Only trusted while highestActiveStale is false. */
   private highestActive: number = -1;
   private highestActiveStale: boolean = false;
@@ -46,8 +47,17 @@ export class InstancePool {
   release(id: number): void {
     if (this.activeInstances.delete(id)) {
       this.freeIds.push(id);
+      this.releaseGeneration++;
       if (id === this.highestActive) this.highestActiveStale = true;
     }
+  }
+
+  /**
+   * Monotonic counter incremented on every successful {@link release}.
+   * Starved chunks record this value and retry only after it moves.
+   */
+  getReleaseGeneration(): number {
+    return this.releaseGeneration;
   }
 
   /**
@@ -94,6 +104,7 @@ export class InstancePool {
     this.nextId = 0;
     this.highestActive = -1;
     this.highestActiveStale = false;
+    this.releaseGeneration = 0;
   }
 
   /**

@@ -1,7 +1,7 @@
 import * as THREE from 'three';
 import { BaseScatterConfig, RequiredScatterConfig } from './types';
 import { ChunkData } from './ChunkData';
-import { InstancePool, PerlinNoise, SeededRandom } from '../utils';
+import { InstancePool, PerlinNoise, SeededRandom, clampNormalTilt, composeAlignedYaw } from '../utils';
 import { MeshToInstancedMeshConverter } from '../converter/MeshToInstancedMeshConverter';
 
 // Camera reference passed during update
@@ -16,11 +16,15 @@ export abstract class BaseScatterSystem extends THREE.Group {
   protected config: RequiredScatterConfig;
   protected converter: MeshToInstancedMeshConverter;
   protected instancePool: InstancePool;
-  protected chunks: Map<string, ChunkData> = new Map();
+  chunks: Map<string, ChunkData> = new Map();
   protected isInitialized: boolean = false;
   private initPromise: Promise<void> | null = null;
   protected debugGroup: THREE.Group;
   protected debugMaterial: THREE.LineBasicMaterial;
+  /** Extra residency as a fraction of visibilityRange when chunkRetention is enabled. */
+  static readonly DEFAULT_UNLOAD_MARGIN = 0.25;
+  /** Minimum density-multiplier increase that triggers a rebuild while blending LOD bands. */
+  private static readonly LOD_REFRESH_MARGIN = 0.12;
 
   // Frustum culling
   protected frustum: THREE.Frustum = new THREE.Frustum();
@@ -56,6 +60,8 @@ export abstract class BaseScatterSystem extends THREE.Group {
       rotationRange: config.rotationRange ?? [0, Math.PI * 2],
       heightOffset: config.heightOffset ?? 0,
       alignToNormal: config.alignToNormal ?? true,
+      minSpacing: Math.max(0, config.minSpacing ?? 0),
+      tiltLimit: config.tiltLimit == null || !Number.isFinite(config.tiltLimit) ? 90 : Math.max(0, Math.min(90, config.tiltLimit)),
       randomSeed: config.randomSeed ?? Date.now(),
       showChunksDebug: config.showChunksDebug ?? false,
       noiseDistribution: { ...defaultNoiseConfig, ...(config.noiseDistribution || {}) },
@@ -446,6 +452,120 @@ export abstract class BaseScatterSystem extends THREE.Group {
     return this.converter;
   }
 
+  /**
+   * Owner-driven hide/show (occlusion, streaming zones). Stored separately from
+   * scatter visibility so a loaded zone cannot re-show a chunk the distance or
+   * frustum tests have hidden, and scatter updates cannot re-show a chunk the
+   * owner has hidden.
+   */
+  setChunkExternalVisibility(chunkKey: string, visible: boolean): void {
+    const chunk = this.chunks.get(chunkKey);
+    if (!chunk) return;
+    chunk.externallyHidden = !visible;
+    this.applyChunkDrawState(chunkKey, chunk);
+  }
+
+  /**
+   * Rebuild a resident chunk that was populated at a sparser LOD band.
+   * One-directional: chunks moving outward keep their extra instances.
+   */
+  protected chunkNeedsLODRefresh(chunk: ChunkData, centerX: number, centerZ: number): boolean {
+    if (!this.config.lod?.levels?.length) return false;
+    const populated = chunk.populatedLodMultiplier;
+    if (populated === undefined) return false;
+
+    const current = this.getLODDensityMultiplier(centerX, centerZ);
+    if (current <= populated) return false;
+
+    const camera = this.getCurrentCamera();
+    if (!camera) return false;
+
+    const levels = this.config.lod.levels;
+    const blendDistance = this.config.lod.blendDistance ?? 0;
+    const dx = centerX - camera.position.x;
+    const dz = centerZ - camera.position.z;
+    const distance = Math.sqrt(dx * dx + dz * dz);
+
+    // Closest band is full density; always restore the nominal count there.
+    if (distance < levels[0].distance) {
+      return true;
+    }
+
+    if (blendDistance > 0) {
+      for (let i = 0; i < levels.length; i++) {
+        const start = levels[i].distance;
+        if (distance >= start && distance < start + blendDistance) {
+          return (current - populated) > BaseScatterSystem.LOD_REFRESH_MARGIN;
+        }
+      }
+    }
+
+    return true;
+  }
+
+  protected getResidentRange(): number {
+    const retention = this.config.chunkRetention;
+    if (!retention?.enabled) return this.config.visibilityRange;
+    const margin = retention.unloadMargin ?? BaseScatterSystem.DEFAULT_UNLOAD_MARGIN;
+    return this.config.visibilityRange * (1 + margin);
+  }
+
+  protected isRetentionEnabled(): boolean {
+    return this.config.chunkRetention?.enabled === true;
+  }
+
+  protected isChunkScatterVisible(centerX: number, centerZ: number, bounds: THREE.Box3): boolean {
+    const camera = this.getCurrentCamera();
+    if (!camera) return false;
+    const dx = centerX - camera.position.x;
+    const dz = centerZ - camera.position.z;
+    if (Math.sqrt(dx * dx + dz * dz) > this.config.visibilityRange) {
+      return false;
+    }
+    return this.isChunkInFrustum(bounds);
+  }
+
+  protected syncChunkScatterVisibility(key: string, scatterVisible: boolean): void {
+    const chunk = this.chunks.get(key);
+    if (!chunk?.isActive) return;
+    chunk.scatterVisible = scatterVisible;
+    this.applyChunkDrawState(key, chunk);
+  }
+
+  protected applyChunkDrawState(key: string, chunk: ChunkData): void {
+    const ownerHidden = this.config.chunkRetention?.isExternallyHidden?.(key) ?? false;
+    const shouldDraw = chunk.isActive
+      && chunk.scatterVisible
+      && !chunk.externallyHidden
+      && !ownerHidden;
+    if (chunk.isVisible === shouldDraw) return;
+
+    if (shouldDraw) {
+      for (const instanceId of chunk.instances) {
+        this.converter.showInstance(instanceId);
+      }
+    } else {
+      for (const instanceId of chunk.instances) {
+        this.converter.hideInstance(instanceId);
+      }
+    }
+    chunk.isVisible = shouldDraw;
+  }
+
+  protected rebuildChunk(x: number, z: number, extraData?: unknown): void {
+    const key = this.getChunkKey(x, z);
+    const previous = this.chunks.get(key);
+    const externallyHidden = previous?.externallyHidden ?? false;
+    const scatterVisible = previous?.scatterVisible ?? true;
+    this.deactivateChunk(key);
+    this.activateChunk(x, z, extraData);
+    const chunk = this.chunks.get(key);
+    if (!chunk) return;
+    chunk.externallyHidden = externallyHidden;
+    chunk.scatterVisible = scatterVisible;
+    this.applyChunkDrawState(key, chunk);
+  }
+
   // ============================================
   // Protected utilities for subclasses
   // ============================================
@@ -477,15 +597,28 @@ export abstract class BaseScatterSystem extends THREE.Group {
       new THREE.Vector3(x + chunkSize / 2, 1000, z + chunkSize / 2)
     );
 
+    const previous = this.chunks.get(key);
     const chunk: ChunkData = {
       instances: [],
       isActive: true,
+      isVisible: true,
+      // A chunk that was deactivated carries scatterVisible = false. Inheriting that would bring
+      // it back hidden, and only the heightmap system re-syncs visibility afterwards: mesh, curve
+      // and the other systems would keep it hidden for good. Start a returning chunk as visible,
+      // like a first activation; a system that tracks visibility corrects it in the same update.
+      scatterVisible: previous?.isActive ? previous.scatterVisible : true,
+      externallyHidden: previous?.externallyHidden
+        ?? this.config.chunkRetention?.isExternallyHidden?.(key)
+        ?? false,
+      centerX: x,
+      centerZ: z,
       noiseGenerator: noiseGen,
       bounds: bounds
     };
 
     this.populateChunk(chunk, x, z, extraData);
     this.chunks.set(key, chunk);
+    this.applyChunkDrawState(key, chunk);
 
     // Emit activation event
     this.config.events?.onChunkActivated?.(key, chunk.instances.length);
@@ -505,7 +638,10 @@ export abstract class BaseScatterSystem extends THREE.Group {
     }
 
     chunk.instances = [];
+    chunk.placedPoints = undefined;
     chunk.isActive = false;
+    chunk.isVisible = false;
+    chunk.scatterVisible = false;
 
     // Emit deactivation event
     this.config.events?.onChunkDeactivated?.(key);
@@ -574,10 +710,12 @@ export abstract class BaseScatterSystem extends THREE.Group {
     const rotation = new THREE.Euler(0, rng.range(...this.config.rotationRange), 0);
 
     if (this.config.alignToNormal && normal) {
-      const up = new THREE.Vector3(0, 1, 0);
-      const quaternion = new THREE.Quaternion().setFromUnitVectors(up, normal);
-      rotation.setFromQuaternion(quaternion);
-      rotation.y += rng.range(...this.config.rotationRange);
+      const limited = clampNormalTilt(normal.x, normal.y, normal.z, this.config.tiltLimit);
+      // The Euler above already consumed one yaw sample. Keep that call so later scale noise stays put,
+      // and spin this second sample around the clamped normal instead of world Y.
+      const yaw = rng.range(...this.config.rotationRange);
+      const aligned = composeAlignedYaw(limited.x, limited.y, limited.z, yaw);
+      rotation.setFromQuaternion(new THREE.Quaternion(aligned.x, aligned.y, aligned.z, aligned.w));
     }
 
     let baseScale = rng.range(...this.config.scaleRange);

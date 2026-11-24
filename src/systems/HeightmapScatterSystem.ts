@@ -1,6 +1,6 @@
 import * as THREE from 'three';
 import { BaseScatterSystem, BaseScatterConfig, ChunkData } from '../core';
-import { SeededRandom } from '../utils';
+import { PerlinNoise, SeededRandom, violatesMinSpacing } from '../utils';
 
 /**
  * Configuration for heightmap-based scatter
@@ -55,6 +55,8 @@ export class HeightmapScatterSystem extends BaseScatterSystem {
   private heightMapScale: number;
   private slopeLimit: number;
   private scatterSpaceInverse: THREE.Matrix4 | null = null;
+  /** Points for this update, including chunks that are not resident. Load order must not change them. */
+  private _placementMemo = new Map<string, { x: number; z: number }[]>();
 
   constructor(config: HeightmapScatterConfig) {
     super(config);
@@ -103,20 +105,29 @@ export class HeightmapScatterSystem extends BaseScatterSystem {
   protected updateChunks(): void {
     const camera = this.getCurrentCamera();
     if (!camera) return;
+    this._placementMemo = new Map();
     const cameraPos = camera.position;
-    const visRange = this.config.visibilityRange;
     const chunkSize = this.config.chunkSize;
+    const residentRange = this.getResidentRange();
+    const retain = this.isRetentionEnabled();
     const minWorldX = this.worldOrigin.x;
     const minWorldZ = this.worldOrigin.y;
     const maxWorldX = minWorldX + this.worldSizeX;
     const maxWorldZ = minWorldZ + this.worldSizeZ;
 
-    const activeChunkKeys = new Set<string>();
+    const residents: Array<{
+      key: string;
+      x: number;
+      z: number;
+      bounds: THREE.Box3;
+      scatterVisible: boolean;
+    }> = [];
+    const residentKeys = new Set<string>();
 
-    const startX = Math.floor((cameraPos.x - visRange) / chunkSize) * chunkSize;
-    const endX = Math.ceil((cameraPos.x + visRange) / chunkSize) * chunkSize;
-    const startZ = Math.floor((cameraPos.z - visRange) / chunkSize) * chunkSize;
-    const endZ = Math.ceil((cameraPos.z + visRange) / chunkSize) * chunkSize;
+    const startX = Math.floor((cameraPos.x - residentRange) / chunkSize) * chunkSize;
+    const endX = Math.ceil((cameraPos.x + residentRange) / chunkSize) * chunkSize;
+    const startZ = Math.floor((cameraPos.z - residentRange) / chunkSize) * chunkSize;
+    const endZ = Math.ceil((cameraPos.z + residentRange) / chunkSize) * chunkSize;
 
     for (let x = startX; x <= endX; x += chunkSize) {
       for (let z = startZ; z <= endZ; z += chunkSize) {
@@ -125,73 +136,85 @@ export class HeightmapScatterSystem extends BaseScatterSystem {
 
         if (chunkX < minWorldX || chunkX > maxWorldX || chunkZ < minWorldZ || chunkZ > maxWorldZ) continue;
 
-        const key = this.getChunkKey(chunkX, chunkZ);
         const dx = chunkX - cameraPos.x;
         const dz = chunkZ - cameraPos.z;
         const distance = Math.sqrt(dx * dx + dz * dz);
+        if (distance > residentRange) continue;
 
-        if (distance <= visRange) {
-          // Frustum culling - skip chunks not visible
-          const chunkBounds = new THREE.Box3(
-            new THREE.Vector3(chunkX - chunkSize / 2, -1000, chunkZ - chunkSize / 2),
-            new THREE.Vector3(chunkX + chunkSize / 2, 1000, chunkZ + chunkSize / 2)
-          );
-          if (!this.isChunkInFrustum(chunkBounds)) continue;
+        const chunkBounds = new THREE.Box3(
+          new THREE.Vector3(chunkX - chunkSize / 2, -1000, chunkZ - chunkSize / 2),
+          new THREE.Vector3(chunkX + chunkSize / 2, 1000, chunkZ + chunkSize / 2)
+        );
+        const scatterVisible = this.isChunkScatterVisible(chunkX, chunkZ, chunkBounds);
+        // Without retention, frustum still gates residency so turning away
+        // releases instances. With retention, off-frustum chunks stay allocated.
+        if (!retain && !scatterVisible) continue;
 
-          activeChunkKeys.add(key);
-          if (!this.chunks.has(key) || !this.chunks.get(key)!.isActive) {
-            this.activateChunk(chunkX, chunkZ);
-          }
-        }
+        const key = this.getChunkKey(chunkX, chunkZ);
+        residentKeys.add(key);
+        residents.push({ key, x: chunkX, z: chunkZ, bounds: chunkBounds, scatterVisible });
       }
     }
 
+    // Release everything leaving before populating, so peak allocation is the
+    // resident set rather than outgoing + incoming.
     for (const [key, chunk] of this.chunks.entries()) {
-      if (!activeChunkKeys.has(key) && chunk.isActive) {
+      if (!residentKeys.has(key) && chunk.isActive) {
         this.deactivateChunk(key);
       }
+    }
+
+    const releaseGeneration = this.instancePool.getReleaseGeneration();
+    for (const resident of residents) {
+      const chunk = this.chunks.get(resident.key);
+      const needsPopulate = !chunk?.isActive;
+      const needsLodRefresh = !!chunk?.isActive && this.chunkNeedsLODRefresh(chunk, resident.x, resident.z);
+      const needsStarvedRetry = !!chunk?.isActive
+        && chunk.starvedGeneration !== undefined
+        && releaseGeneration > chunk.starvedGeneration;
+
+      if (needsPopulate) {
+        this.activateChunk(resident.x, resident.z);
+      } else if (needsLodRefresh || needsStarvedRetry) {
+        this.rebuildChunk(resident.x, resident.z);
+      }
+    }
+
+    for (const resident of residents) {
+      this.syncChunkScatterVisibility(resident.key, resident.scatterVisible);
     }
   }
 
   protected populateChunk(chunk: ChunkData, centerX: number, centerZ: number): void {
-    const halfSize = this.config.chunkSize / 2;
-    const minX = centerX - halfSize;
-    const maxX = centerX + halfSize;
-    const minZ = centerZ - halfSize;
-    const maxZ = centerZ + halfSize;
-
-    const chunkArea = this.config.chunkSize * this.config.chunkSize;
     const lodMultiplier = this.getLODDensityMultiplier(centerX, centerZ);
-    const targetCount = Math.floor(chunkArea * this.config.density * lodMultiplier);
+    chunk.populatedLodMultiplier = lodMultiplier;
+    const candidates = this._acceptedPoints(centerX, centerZ);
+    // LOD only removes a stable suffix; it never changes spacing decisions.
+    const local = this.config.minSpacing > 0
+      ? candidates.slice(0, Math.floor(candidates.length * Math.min(1, Math.max(0, lodMultiplier))))
+      : candidates;
+    chunk.placedPoints = local.slice();
 
-    const chunkSeed = ((centerX * 73856093) ^ (centerZ * 19349663) ^ this.config.randomSeed) >>> 0;
-    const rng = new SeededRandom(chunkSeed);
-
-    let placed = 0;
-    let attempts = 0;
-    const maxAttempts = targetCount * 3;
-
-    while (placed < targetCount && attempts < maxAttempts) {
-      attempts++;
-
-      const x = rng.range(minX, maxX);
-      const z = rng.range(minZ, maxZ);
-
-      if (!this.shouldPlaceInstance(x, z, chunk.noiseGenerator!, rng)) continue;
-      if (!this.checkMask(x, z)) continue;
-
-      const height = this.sampleHeight(x, z);
+    const chunkSeed = this._chunkSeed(centerX, centerZ);
+    const transformRng = new SeededRandom((chunkSeed ^ 0x85ebca6b) >>> 0);
+    for (const point of local) {
+      const height = this.sampleHeight(point.x, point.z);
       if (height === null) continue;
 
-      const normal = this.sampleNormal(x, z);
-      const slope = this.calculateSlope(normal);
-      if (slope > this.slopeLimit) continue;
-
       const instanceId = this.instancePool.acquire();
-      if (instanceId === null) break;
+      if (instanceId === null) {
+        chunk.starvedGeneration = this.instancePool.getReleaseGeneration();
+        break;
+      }
 
-      const position = new THREE.Vector3(x, height, z);
-      const transform = this.createInstanceTransform(position, rng, normal, chunk.noiseGenerator ?? undefined);
+      const normal = this.sampleNormal(point.x, point.z);
+      const position = new THREE.Vector3(point.x, height, point.z);
+      const transform = this.createInstanceTransform(
+        position,
+        transformRng,
+        normal,
+        chunk.noiseGenerator ?? undefined,
+      );
 
       if (this.scatterSpaceInverse) {
         const m = new THREE.Matrix4().compose(
@@ -207,8 +230,127 @@ export class HeightmapScatterSystem extends BaseScatterSystem {
 
       this.converter.setInstanceTransform(instanceId, transform.position, transform.rotation, transform.scale);
       chunk.instances.push(instanceId);
+    }
+  }
+
+  /**
+   * Yield to full-density local candidates from earlier neighboring chunks.
+   * Neighbors do not resolve their own neighbors here: even a candidate which
+   * later loses a border conflict reserves its space. This conservative border
+   * thinning gives a finite halo and a camera-independent, globally spaced set.
+   */
+  private _acceptedPoints(centerX: number, centerZ: number): { x: number; z: number }[] {
+    const local = this._localCandidates(centerX, centerZ);
+    if (this.config.minSpacing <= 0) return local;
+    const half = this.config.chunkSize / 2;
+    const bounds = new THREE.Box3(
+      new THREE.Vector3(centerX - half, -1000, centerZ - half),
+      new THREE.Vector3(centerX + half, 1000, centerZ + half),
+    );
+    const anchors = this._deterministicAnchors(centerX, centerZ, bounds);
+    return local.filter((point) => !violatesMinSpacing(point.x, point.z, anchors, this.config.minSpacing));
+  }
+
+  private _localCandidates(centerX: number, centerZ: number): { x: number; z: number }[] {
+    const key = `${centerX}:${centerZ}`;
+    const cached = this._placementMemo.get(key);
+    if (cached) {
+      return cached;
+    }
+
+    const local: { x: number; z: number }[] = [];
+    this._placementMemo.set(key, local);
+    const chunkSize = this.config.chunkSize;
+    if (!(chunkSize > 0) || !this._chunkCenterInWorld(centerX, centerZ)) {
+      return local;
+    }
+
+    const halfSize = chunkSize / 2;
+    const minX = centerX - halfSize;
+    const maxX = centerX + halfSize;
+    const minZ = centerZ - halfSize;
+    const maxZ = centerZ + halfSize;
+    const accepted: { x: number; z: number }[] = [];
+
+    const lodMultiplier = this.config.minSpacing > 0 ? 1 : this.getLODDensityMultiplier(centerX, centerZ);
+    const targetCount = Math.floor(chunkSize * chunkSize * this.config.density * lodMultiplier);
+    const maxAttempts = targetCount * 3;
+    const minSpacing = this.config.minSpacing;
+    const chunkSeed = this._chunkSeed(centerX, centerZ);
+    const rng = new SeededRandom(chunkSeed);
+    const noise = new PerlinNoise(chunkSeed);
+    let placed = 0;
+    let attempts = 0;
+
+    while (placed < targetCount && attempts < maxAttempts) {
+      attempts++;
+      const x = rng.range(minX, maxX);
+      const z = rng.range(minZ, maxZ);
+      if (violatesMinSpacing(x, z, accepted, minSpacing)) continue;
+      if (!this.shouldPlaceInstance(x, z, noise, rng)) continue;
+      if (!this.checkMask(x, z)) continue;
+      if (this.sampleHeight(x, z) === null) continue;
+      if (this.calculateSlope(this.sampleNormal(x, z)) > this.slopeLimit) continue;
+
+      const point = { x, z };
+      accepted.push(point);
+      local.push(point);
       placed++;
     }
+
+    return local;
+  }
+
+  private _deterministicAnchors(
+    centerX: number,
+    centerZ: number,
+    bounds: THREE.Box3,
+  ): { x: number; z: number }[] {
+    const minSpacing = this.config.minSpacing;
+    const chunkSize = this.config.chunkSize;
+    if (minSpacing <= 0 || !(chunkSize > 0)) {
+      return [];
+    }
+
+    const reach = Math.max(1, Math.ceil(minSpacing / chunkSize));
+    const minX = bounds.min.x - minSpacing;
+    const maxX = bounds.max.x + minSpacing;
+    const minZ = bounds.min.z - minSpacing;
+    const maxZ = bounds.max.z + minSpacing;
+    const anchors: { x: number; z: number }[] = [];
+    for (let ix = -reach; ix <= reach; ix++) {
+      for (let iz = -reach; iz <= reach; iz++) {
+        if (ix === 0 && iz === 0) continue;
+        const neighborX = centerX + (ix * chunkSize);
+        const neighborZ = centerZ + (iz * chunkSize);
+        if (this._chunkOrder(neighborX, neighborZ, centerX, centerZ) >= 0) continue;
+        if (!this._chunkCenterInWorld(neighborX, neighborZ)) continue;
+
+        for (const point of this._localCandidates(neighborX, neighborZ)) {
+          if (point.x < minX || point.x > maxX || point.z < minZ || point.z > maxZ) continue;
+          anchors.push(point);
+        }
+      }
+    }
+    return anchors;
+  }
+
+  private _chunkSeed(centerX: number, centerZ: number): number {
+    return ((centerX * 73856093) ^ (centerZ * 19349663) ^ this.config.randomSeed) >>> 0;
+  }
+
+  private _chunkCenterInWorld(centerX: number, centerZ: number): boolean {
+    return centerX >= this.worldOrigin.x
+      && centerX <= this.worldOrigin.x + this.worldSizeX
+      && centerZ >= this.worldOrigin.y
+      && centerZ <= this.worldOrigin.y + this.worldSizeZ;
+  }
+
+  /** Negative when the first chunk is the one that keeps its points. */
+  private _chunkOrder(ax: number, az: number, bx: number, bz: number): number {
+    if (ax !== bx) return ax < bx ? -1 : 1;
+    if (az !== bz) return az < bz ? -1 : 1;
+    return 0;
   }
 
   private async extractTextureData(texture: THREE.Texture): Promise<Uint8Array> {

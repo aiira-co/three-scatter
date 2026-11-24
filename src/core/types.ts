@@ -59,6 +59,25 @@ export interface LODConfig {
 }
 
 /**
+ * Keep chunks resident beyond the view frustum / visibility range so turning
+ * the camera does not re-run placement. Hidden instances stay allocated and
+ * are zero-scaled until they leave the unload radius.
+ */
+export interface ChunkRetentionConfig {
+  enabled: boolean;
+  /**
+   * Extra residency as a fraction of {@link BaseScatterConfig.visibilityRange}.
+   * Unload radius is `visibilityRange * (1 + unloadMargin)`. Default: 0.25.
+   */
+  unloadMargin?: number;
+  /**
+   * Owner veto queried while scatter updates visibility. Prevents distance or
+   * frustum tests from re-showing a chunk occlusion / zones have hidden.
+   */
+  isExternallyHidden?: (chunkKey: string) => boolean;
+}
+
+/**
  * Density map configuration for texture-based density modulation
  */
 export interface DensityMapConfig {
@@ -94,6 +113,13 @@ export interface BaseScatterConfig {
   heightOffset?: number;
   /** Align instances to surface normal */
   alignToNormal?: boolean;
+  /** Minimum metres between instances. 0 turns the check off. */
+  minSpacing?: number;
+  /**
+   * Maximum lean from world up, in degrees, after normal alignment.
+   * 90 keeps the full slope. 0 stands instances upright.
+   */
+  tiltLimit?: number;
   /** Seed for deterministic random placement */
   randomSeed?: number;
   /** Show debug wireframes for chunks */
@@ -106,13 +132,19 @@ export interface BaseScatterConfig {
   lod?: LODConfig;
   /** Density map for texture-based density variation */
   densityMap?: DensityMapConfig;
+  /**
+   * Keep chunks resident by distance instead of destroying them when they
+   * leave the view frustum. Off by default.
+   */
+  chunkRetention?: ChunkRetentionConfig;
 }
 
 /**
  * Required version of BaseScatterConfig with all optional fields filled
  */
-export type RequiredScatterConfig = Required<Omit<BaseScatterConfig, 'events'>> & {
+export type RequiredScatterConfig = Required<Omit<BaseScatterConfig, 'events' | 'chunkRetention'>> & {
   noiseDistribution: Required<NoiseDistributionConfig>;
   events: ScatterEvents;
+  chunkRetention?: ChunkRetentionConfig;
 };
 
